@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>BlueSec Manual Lab</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="scanline" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="BlueSec Manual Lab">
+        <span class="brand-mark">B</span>
+        <span>
+          <strong>BLUESEC</strong>
+          <small>MANUAL LAB // TASK 01</small>
+        </span>
+      </a>
+      <div class="topbar-meta">
+        <span id="toolCounter" class="metric">0 действий</span>
+        <span id="phaseBadge" class="phase-badge phase-ready">ГОТОВО</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="connectView" class="connect-view">
+        <div class="connect-copy">
+          <p class="eyebrow">HUMAN-IN-THE-LOOP INVESTIGATION</p>
+          <h1>Разберите инцидент<br />своими руками.</h1>
+          <p class="lead">
+            Один run. Одна задача. Те же данные и инструменты, которые получает агент —
+            но решения принимаете вы.
+          </p>
+          <div class="guardrails">
+            <div><span>01</span><p>Сервер арендует только первую задачу.</p></div>
+            <div><span>02</span><p>Каждый клик отправляет настоящий tool call.</p></div>
+            <div><span>03</span><p>После финального вердикта очередь не продолжается.</p></div>
+          </div>
+        </div>
+
+        <form id="connectForm" class="connect-card">
+          <div class="card-heading">
+            <span class="status-light"></span>
+            <div>
+              <p>Подключение к рантайму</p>
+              <small>Ключ хранится только в памяти локального сервера</small>
+            </div>
+          </div>
+          <label>
+            <span>Endpoint</span>
+            <input name="endpoint" value="bluesec.team:443" required autocomplete="off" />
+          </label>
+          <label>
+            <span>Runtime token</span>
+            <input
+              name="token"
+              type="password"
+              placeholder="ifk_…"
+              required
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <div class="form-row">
+            <label>
+              <span>Арена <em>необязательно</em></span>
+              <input name="arena" placeholder="practice" autocomplete="off" />
+            </label>
+            <label>
+              <span>Имя агента</span>
+              <input name="agentName" value="bluesec-manual-lab" required />
+            </label>
+          </div>
+          <button class="primary-button" type="submit">
+            <span>Получить первую задачу</span><span aria-hidden="true">→</span>
+          </button>
+          <p class="microcopy">
+            Интерфейс не запускает LLM и не запрашивает вторую задачу даже после завершения.
+          </p>
+        </form>
+      </section>
+
+      <section id="labView" class="lab-view hidden" aria-live="polite">
+        <aside class="case-sidebar panel">
+          <div class="panel-label">CASE FILE</div>
+          <div class="case-number">TASK <span id="taskShortId">—</span></div>
+          <button id="abortButton" class="abort-button" type="button">
+            Прервать без вердикта
+          </button>
+        </aside>
+
+        <section class="workspace panel">
+          <div class="workspace-header">
+            <div>
+              <p class="eyebrow">INVESTIGATION TRACE</p>
+              <h2>Ход расследования</h2>
+            </div>
+            <div id="runMeta" class="run-meta"></div>
+          </div>
+          <div id="completionBanner" class="completion-banner hidden"></div>
+          <div id="timeline" class="timeline"></div>
+          <details class="raw-details current-observation">
+            <summary>Текущее состояние среды</summary>
+            <div class="json-toolbar">
+              <span>current_observation</span>
+              <button type="button" data-copy-target="currentJson">Копировать</button>
+            </div>
+            <div id="currentJson" class="json-tree" aria-label="Текущий JSON среды"></div>
+          </details>
+        </section>
+
+        <aside class="tool-dock panel">
+          <div class="panel-label">AVAILABLE TOOLS</div>
+          <p class="tool-intro">Среда разрешает только эти действия.</p>
+          <div id="toolButtons" class="tool-buttons"></div>
+          <div id="toolFormArea" class="tool-form-area empty-tool-state">
+            <div class="crosshair" aria-hidden="true">＋</div>
+            <p>Выберите действие для следующего шага</p>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <div id="busyOverlay" class="busy-overlay hidden" role="status">
+      <span class="spinner"></span><span id="busyText">Связь со средой…</span>
+    </div>
+    <div id="toast" class="toast hidden" role="alert"></div>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

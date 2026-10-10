@@ -36,9 +36,9 @@ TOOL_CATALOG = [
 
 
 class FakeSession:
-    def __init__(self) -> None:
+    def __init__(self, task_id: str = "task-01") -> None:
         self.task = PublicTask(
-            task_id="task-01",
+            task_id=task_id,
             observation={
                 "alert_text": json.dumps(
                     {
@@ -93,9 +93,9 @@ class MissingRunSession(FakeSession):
 
 
 class FakeClient:
-    def __init__(self, session: FakeSession, **_: Any) -> None:
+    def __init__(self, session: FakeSession, *, run_id: str = "run-01", **_: Any) -> None:
         self.session = session
-        self.run = SimpleNamespace(run_id="run-01")
+        self.run = SimpleNamespace(run_id=run_id)
         self.start_task_calls = 0
         self.closed = False
 
@@ -108,6 +108,20 @@ class FakeClient:
 
     async def aclose(self, **_: Any) -> None:
         self.closed = True
+
+
+class FakeClientFactory:
+    def __init__(self) -> None:
+        self.clients: list[FakeClient] = []
+        self.sessions: list[FakeSession] = []
+
+    def __call__(self, **_: Any) -> FakeClient:
+        sequence = len(self.clients) + 1
+        session = FakeSession(task_id=f"task-{sequence:02d}")
+        client = FakeClient(session, run_id=f"run-{sequence:02d}")
+        self.sessions.append(session)
+        self.clients.append(client)
+        return client
 
 
 def make_game() -> tuple[InvestigationGame, FakeClient, FakeSession]:
@@ -186,11 +200,29 @@ def test_abort_closes_the_only_task_without_a_verdict() -> None:
     assert client.start_task_calls == 1
 
 
-def test_restart_aborts_active_task_and_returns_to_ready_state() -> None:
+def test_restart_aborts_active_task_and_immediately_opens_new_run() -> None:
+    factory = FakeClientFactory()
+    game = InvestigationGame(client_factory=factory)  # type: ignore[arg-type]
+    initial = start(game)
+
+    restarted = asyncio.run(game.restart())
+
+    assert initial["run_id"] == "run-01"
+    assert initial["task_id"] == "task-01"
+    assert factory.sessions[0].aborted is True
+    assert factory.clients[0].closed is True
+    assert restarted["phase"] == "active"
+    assert restarted["run_id"] == "run-02"
+    assert restarted["task_id"] == "task-02"
+    assert restarted["history"][0]["kind"] == "task_started"
+    assert len(factory.clients) == 2
+
+
+def test_finish_study_aborts_active_task_and_returns_to_ready_state() -> None:
     game, client, session = make_game()
     start(game)
 
-    ready = asyncio.run(game.restart())
+    ready = asyncio.run(game.finish_study())
 
     assert session.aborted is True
     assert client.closed is True
@@ -272,8 +304,9 @@ def test_missing_remote_run_during_abort_does_not_return_500() -> None:
     assert response.json()["can_restart"] is True
 
 
-def test_restart_http_endpoint_returns_to_start_screen() -> None:
-    game, _, session = make_game()
+def test_restart_http_endpoint_returns_new_run_and_task() -> None:
+    factory = FakeClientFactory()
+    game = InvestigationGame(client_factory=factory)  # type: ignore[arg-type]
 
     with TestClient(create_app(game)) as browser:
         browser.post(
@@ -286,6 +319,28 @@ def test_restart_http_endpoint_returns_to_start_screen() -> None:
             },
         )
         response = browser.post("/api/session/restart", json={})
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "active"
+    assert response.json()["run_id"] == "run-02"
+    assert response.json()["task_id"] == "task-02"
+    assert factory.sessions[0].aborted is True
+
+
+def test_finish_study_http_endpoint_returns_to_start_screen() -> None:
+    game, _, session = make_game()
+
+    with TestClient(create_app(game)) as browser:
+        browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "secret-token",
+                "arena": None,
+                "agent_name": "manual-test",
+            },
+        )
+        response = browser.post("/api/session/end", json={})
 
     assert response.status_code == 200
     assert response.json()["phase"] == "ready"
@@ -304,8 +359,10 @@ def test_unadvertised_tool_is_rejected_locally() -> None:
 
 
 def test_browser_snapshot_never_contains_the_runtime_token() -> None:
-    game, _, _ = make_game()
-    state = start(game)
+    factory = FakeClientFactory()
+    game = InvestigationGame(client_factory=factory)  # type: ignore[arg-type]
+    start(game)
+    state = asyncio.run(game.restart())
 
     assert "secret-token" not in json.dumps(state)
 

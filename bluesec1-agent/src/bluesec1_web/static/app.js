@@ -17,8 +17,8 @@ const elements = {
   timeline: document.querySelector("#timeline"),
   toolButtons: document.querySelector("#toolButtons"),
   toolFormArea: document.querySelector("#toolFormArea"),
-  abortButton: document.querySelector("#abortButton"),
   restartButton: document.querySelector("#restartButton"),
+  endStudyButton: document.querySelector("#endStudyButton"),
   completionBanner: document.querySelector("#completionBanner"),
   docsNavButton: document.querySelector("#docsNavButton"),
   toolsDocsButton: document.querySelector("#toolsDocsButton"),
@@ -227,8 +227,8 @@ function renderCase(state) {
   elements.taskShortId.textContent = shortId(state.task_id);
   elements.runMeta.textContent = `RUN ${shortId(state.run_id)}\nTASK ${shortId(state.task_id)}`;
   renderJsonTree(elements.currentJson, state.current_observation);
-  elements.abortButton.disabled = state.phase !== "active";
   elements.restartButton.disabled = state.phase === "connecting";
+  elements.endStudyButton.disabled = state.phase === "connecting";
 }
 
 function renderEntryPoint(item, kind) {
@@ -300,6 +300,14 @@ function renderTimeline(state) {
       body.append(tags);
     }
     if (event.arguments) body.append(renderCodeSection("ОТПРАВЛЕНО", event.arguments));
+    const observation = event.response?.observation;
+    if (
+      observation &&
+      typeof observation === "object" &&
+      Object.prototype.hasOwnProperty.call(observation, "last_tool_result")
+    ) {
+      body.append(renderCodeSection("ПОЛУЧЕНО", observation.last_tool_result));
+    }
     if (event.response) body.append(renderCodeSection("ПОЛНЫЙ ОТВЕТ СРЕДЫ", event.response));
     if (event.task_result) body.append(renderCodeSection("РЕЗУЛЬТАТ", event.task_result));
     if (event.error) body.append(renderCodeSection("ОШИБКА", event.error));
@@ -985,11 +993,15 @@ elements.connectForm.addEventListener("submit", async (event) => {
   }
 });
 
-elements.abortButton.addEventListener("click", async () => {
-  if (!window.confirm("Прервать первую задачу без вердикта и закрыть run?")) return;
-  setBusy(true, "Прерываем задачу и закрываем run…");
+elements.endStudyButton.addEventListener("click", async () => {
+  const activeWarning =
+    gameState?.phase === "active"
+      ? "Текущая задача будет прервана без вердикта, а run закрыт. Закончить изучение?"
+      : "Закрыть текущую игру и вернуться на начальный экран?";
+  if (!window.confirm(activeWarning)) return;
+  setBusy(true, "Завершаем изучение…");
   try {
-    updateState(await api("/api/session/abort", { method: "POST", body: "{}" }));
+    updateState(await api("/api/session/end", { method: "POST", body: "{}" }));
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1002,17 +1014,21 @@ async function restartGame({ confirmActive = false } = {}) {
     confirmActive &&
     gameState?.phase === "active" &&
     !window.confirm(
-      "Текущая задача будет прервана без вердикта. После этого откроется форма нового run. Начать заново?",
+      "Текущая задача будет прервана без вердикта. После этого сразу откроется новый run с первой задачей. Начать заново?",
     )
   ) {
     return;
   }
-  setBusy(true, "Подготавливаем новую игру…");
+  setBusy(true, "Создаём новый run и получаем задачу…");
   try {
     updateState(await api("/api/session/restart", { method: "POST", body: "{}" }));
-    elements.connectForm.elements.token.focus();
   } catch (error) {
     showToast(error.message);
+    try {
+      updateState(await api("/api/state"));
+    } catch {
+      // Keep the last visible state if the local server is unavailable as well.
+    }
   } finally {
     setBusy(false);
   }

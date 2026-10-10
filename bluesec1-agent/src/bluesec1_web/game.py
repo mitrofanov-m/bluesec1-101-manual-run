@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +29,16 @@ class GameStateError(RuntimeError):
 ClientFactory = Callable[..., RemoteBenchmarkClient]
 
 
+@dataclass(frozen=True, slots=True)
+class ConnectionSettings:
+    """Runtime connection details retained only in local server memory."""
+
+    endpoint: str
+    token: str
+    arena: str | None
+    agent_name: str
+
+
 class InvestigationGame:
     """Own exactly one remote run and lease at most one task from it."""
 
@@ -46,6 +58,7 @@ class InvestigationGame:
         self._task_result: dict[str, Any] | None = None
         self._last_error: str | None = None
         self._close_warning: str | None = None
+        self._connection_settings: ConnectionSettings | None = None
 
     async def start(
         self,
@@ -73,66 +86,14 @@ class InvestigationGame:
                     "Run уже создан.",
                     code="run_already_started",
                 )
-
-            self._phase = "connecting"
-            self._last_error = None
-            client = self._client_factory(
-                endpoint=endpoint,
-                token=token,
-                verify_tls=True,
-                run_label="bluesec-manual-lab",
-                agent_name=agent_name,
-                model_name="human-in-the-loop",
-                arena=arena,
-                metadata={
-                    "interface": "bluesec-manual-lab",
-                    "mode": "single-task-human-investigation",
-                },
+            return await self._start_run_locked(
+                ConnectionSettings(
+                    endpoint=endpoint,
+                    token=token,
+                    arena=arena,
+                    agent_name=agent_name,
+                )
             )
-            self._client = client
-
-            try:
-                remote_run = await client.open()
-                self._run_id = remote_run.run_id
-                session = await client.start_task()
-            except Exception:
-                self._phase = "ready"
-                self._client = None
-                await self._best_effort_close(client)
-                raise
-
-            if session is None:
-                self._ever_leased_task = True
-                self._phase = "empty"
-                self._client = None
-                await self._best_effort_close(client)
-                return self.snapshot()
-
-            self._session = session
-            self._ever_leased_task = True
-            self._phase = "active"
-            self._task_id = session.task_id
-            self._initial_observation = dict(session.task.observation)
-            self._current_observation = dict(session.task.observation)
-            try:
-                self._tool_specs = self._decode_tool_specs(session.task.observation)
-            except Exception:
-                try:
-                    await session.abort_task(
-                        error_message="Runtime returned an invalid tool catalog to the web client."
-                    )
-                finally:
-                    await self._close_run_locked()
-                raise
-            self._history.append(
-                {
-                    "kind": "task_started",
-                    "at": self._now(),
-                    "task_id": session.task_id,
-                    "observation": dict(session.task.observation),
-                }
-            )
-            return self.snapshot()
 
     async def call_tool(
         self,
@@ -229,11 +190,34 @@ class InvestigationGame:
                     code="run_not_stopped",
                 )
             await self._close_run_locked()
-            self._reset_state_locked()
+            self._reset_state_locked(clear_connection=True)
             return self.snapshot()
 
     async def restart(self) -> dict[str, Any]:
-        """Stop the current task when needed and return to a fresh start screen."""
+        """Stop the current task when needed and immediately open a new run."""
+        async with self._lock:
+            if self._phase == "connecting":
+                raise GameStateError(
+                    "Дождитесь завершения текущего подключения.",
+                    code="connection_in_progress",
+                )
+            settings = self._connection_settings
+            if settings is None:
+                raise GameStateError(
+                    "Параметры подключения не сохранены. Начните с формы подключения.",
+                    code="connection_settings_missing",
+                )
+            if self._phase == "active" and self._session is not None:
+                with suppress(RemoteRunNotFoundError):
+                    await self._session.abort_task(
+                        error_message="Restarted by the user in the local manual interface."
+                    )
+            await self._close_run_locked()
+            self._reset_state_locked(clear_connection=False)
+            return await self._start_run_locked(settings)
+
+    async def finish_study(self) -> dict[str, Any]:
+        """Close any live task and forget the connection before showing the start screen."""
         async with self._lock:
             if self._phase == "connecting":
                 raise GameStateError(
@@ -241,14 +225,12 @@ class InvestigationGame:
                     code="connection_in_progress",
                 )
             if self._phase == "active" and self._session is not None:
-                try:
+                with suppress(RemoteRunNotFoundError):
                     await self._session.abort_task(
-                        error_message="Restarted by the user in the local manual interface."
+                        error_message="Study finished by the user in the local manual interface."
                     )
-                except RemoteRunNotFoundError:
-                    pass
             await self._close_run_locked()
-            self._reset_state_locked()
+            self._reset_state_locked(clear_connection=True)
             return self.snapshot()
 
     async def shutdown(self) -> None:
@@ -295,6 +277,69 @@ class InvestigationGame:
             )
         return self._session
 
+    async def _start_run_locked(self, settings: ConnectionSettings) -> dict[str, Any]:
+        """Open one run from retained settings while the game lock is held."""
+        self._phase = "connecting"
+        self._last_error = None
+        client = self._client_factory(
+            endpoint=settings.endpoint,
+            token=settings.token,
+            verify_tls=True,
+            run_label="bluesec-manual-lab",
+            agent_name=settings.agent_name,
+            model_name="human-in-the-loop",
+            arena=settings.arena,
+            metadata={
+                "interface": "bluesec-manual-lab",
+                "mode": "single-task-human-investigation",
+            },
+        )
+        self._client = client
+
+        try:
+            remote_run = await client.open()
+            self._connection_settings = settings
+            self._run_id = remote_run.run_id
+            session = await client.start_task()
+        except Exception:
+            self._phase = "ready"
+            self._client = None
+            await self._best_effort_close(client)
+            raise
+
+        if session is None:
+            self._ever_leased_task = True
+            self._phase = "empty"
+            self._client = None
+            await self._best_effort_close(client)
+            return self.snapshot()
+
+        self._session = session
+        self._ever_leased_task = True
+        self._phase = "active"
+        self._task_id = session.task_id
+        self._initial_observation = dict(session.task.observation)
+        self._current_observation = dict(session.task.observation)
+        try:
+            self._tool_specs = self._decode_tool_specs(session.task.observation)
+        except Exception:
+            try:
+                await session.abort_task(
+                    error_message="Runtime returned an invalid tool catalog to the web client."
+                )
+            finally:
+                await self._close_run_locked()
+            raise
+        self._history.append(
+            {
+                "kind": "task_started",
+                "at": self._now(),
+                "task_id": session.task_id,
+                "observation": dict(session.task.observation),
+            }
+        )
+        return self.snapshot()
+
     async def _close_run_locked(self) -> None:
         client = self._client
         self._client = None
@@ -310,7 +355,7 @@ class InvestigationGame:
         self._last_error = self._run_stopped_message()
         await self._close_run_locked()
 
-    def _reset_state_locked(self) -> None:
+    def _reset_state_locked(self, *, clear_connection: bool) -> None:
         self._phase = "ready"
         self._ever_leased_task = False
         self._run_id = None
@@ -322,6 +367,8 @@ class InvestigationGame:
         self._task_result = None
         self._last_error = None
         self._close_warning = None
+        if clear_connection:
+            self._connection_settings = None
 
     @staticmethod
     def _run_stopped_message() -> str:

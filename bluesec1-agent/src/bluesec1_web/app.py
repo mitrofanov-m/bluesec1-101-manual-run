@@ -131,6 +131,15 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
         except Exception as error:
             raise _public_http_error(error) from error
 
+    @app.post("/api/session/end")
+    async def finish_study_session() -> dict[str, Any]:
+        try:
+            return await controller.finish_study()
+        except GameStateError:
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
     return app
 
 

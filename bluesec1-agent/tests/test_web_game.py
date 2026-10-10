@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from bluesec1_client import PublicTask, TaskResult, ToolCallResult
+from bluesec1_client import PublicTask, RemoteRunNotFoundError, TaskResult, ToolCallResult
 from bluesec1_web.app import create_app
 from bluesec1_web.game import GameStateError, InvestigationGame
 
@@ -84,6 +84,14 @@ class FakeSession:
         return TaskResult(task_id=self.task_id, completion_reason="aborted")
 
 
+class MissingRunSession(FakeSession):
+    async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolCallResult:
+        raise RemoteRunNotFoundError("The remote run could not be found.")
+
+    async def abort_task(self, *, error_message: str | None = None) -> TaskResult:
+        raise RemoteRunNotFoundError("The remote run could not be found.")
+
+
 class FakeClient:
     def __init__(self, session: FakeSession, **_: Any) -> None:
         self.session = session
@@ -104,6 +112,13 @@ class FakeClient:
 
 def make_game() -> tuple[InvestigationGame, FakeClient, FakeSession]:
     session = FakeSession()
+    client = FakeClient(session)
+    game = InvestigationGame(client_factory=lambda **_: client)  # type: ignore[arg-type]
+    return game, client, session
+
+
+def make_missing_run_game() -> tuple[InvestigationGame, FakeClient, MissingRunSession]:
+    session = MissingRunSession()
     client = FakeClient(session)
     game = InvestigationGame(client_factory=lambda **_: client)  # type: ignore[arg-type]
     return game, client, session
@@ -169,6 +184,113 @@ def test_abort_closes_the_only_task_without_a_verdict() -> None:
     assert session.aborted is True
     assert client.closed is True
     assert client.start_task_calls == 1
+
+
+def test_restart_aborts_active_task_and_returns_to_ready_state() -> None:
+    game, client, session = make_game()
+    start(game)
+
+    ready = asyncio.run(game.restart())
+
+    assert session.aborted is True
+    assert client.closed is True
+    assert ready["phase"] == "ready"
+    assert ready["can_start"] is True
+    assert ready["ever_started"] is False
+    assert ready["run_id"] is None
+    assert ready["task_id"] is None
+    assert ready["history"] == []
+
+
+def test_missing_remote_run_becomes_restartable_terminal_state() -> None:
+    game, client, _ = make_missing_run_game()
+    start(game)
+
+    stopped = asyncio.run(game.abort())
+
+    assert stopped["phase"] == "run_stopped"
+    assert stopped["can_restart"] is True
+    assert stopped["can_start"] is False
+    assert "остановлен средой" in stopped["last_error"]
+    assert stopped["history"][-1]["kind"] == "run_stopped"
+    assert client.closed is True
+
+    ready = asyncio.run(game.reset_stopped_run())
+
+    assert ready["phase"] == "ready"
+    assert ready["can_start"] is True
+    assert ready["can_restart"] is False
+    assert ready["run_id"] is None
+    assert ready["task_id"] is None
+    assert ready["history"] == []
+
+
+def test_missing_remote_run_during_tool_call_does_not_return_500() -> None:
+    game, _, _ = make_missing_run_game()
+
+    with TestClient(create_app(game)) as browser:
+        started = browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "secret-token",
+                "arena": None,
+                "agent_name": "manual-test",
+            },
+        )
+        response = browser.post(
+            "/api/tool",
+            json={
+                "tool_name": "get_entity",
+                "arguments": {"entity_id": "entity-01", "reasoning": "Inspect it."},
+            },
+        )
+
+    assert started.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["phase"] == "run_stopped"
+    assert response.json()["can_restart"] is True
+
+
+def test_missing_remote_run_during_abort_does_not_return_500() -> None:
+    game, _, _ = make_missing_run_game()
+
+    with TestClient(create_app(game)) as browser:
+        browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "secret-token",
+                "arena": None,
+                "agent_name": "manual-test",
+            },
+        )
+        response = browser.post("/api/session/abort", json={})
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "run_stopped"
+    assert response.json()["can_restart"] is True
+
+
+def test_restart_http_endpoint_returns_to_start_screen() -> None:
+    game, _, session = make_game()
+
+    with TestClient(create_app(game)) as browser:
+        browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "secret-token",
+                "arena": None,
+                "agent_name": "manual-test",
+            },
+        )
+        response = browser.post("/api/session/restart", json={})
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "ready"
+    assert response.json()["can_start"] is True
+    assert session.aborted is True
 
 
 def test_unadvertised_tool_is_rejected_locally() -> None:

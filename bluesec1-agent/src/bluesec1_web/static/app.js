@@ -17,6 +17,7 @@ const elements = {
   toolButtons: document.querySelector("#toolButtons"),
   toolFormArea: document.querySelector("#toolFormArea"),
   abortButton: document.querySelector("#abortButton"),
+  restartButton: document.querySelector("#restartButton"),
   completionBanner: document.querySelector("#completionBanner"),
   busyOverlay: document.querySelector("#busyOverlay"),
   busyText: document.querySelector("#busyText"),
@@ -29,6 +30,7 @@ const phaseLabels = {
   active: "РАССЛЕДОВАНИЕ",
   completed: "ЗАВЕРШЕНО",
   aborted: "ПРЕРВАНО",
+  run_stopped: "RUN ОСТАНОВЛЕН",
   empty: "ОЧЕРЕДЬ ПУСТА",
 };
 
@@ -193,6 +195,7 @@ function renderCase(state) {
   elements.runMeta.textContent = `RUN ${shortId(state.run_id)}\nTASK ${shortId(state.task_id)}`;
   renderJsonTree(elements.currentJson, state.current_observation);
   elements.abortButton.disabled = state.phase !== "active";
+  elements.restartButton.disabled = state.phase === "connecting";
 }
 
 function renderEntryPoint(item, kind) {
@@ -237,6 +240,8 @@ function renderTimeline(state) {
     tool.textContent =
       event.kind === "task_aborted"
         ? "ABORT TASK"
+        : event.kind === "run_stopped"
+          ? "RUN STOPPED"
         : `${String(index + 1).padStart(2, "0")} / ${event.tool_name || event.kind}`;
     const time = document.createElement("span");
     time.className = "event-time";
@@ -379,20 +384,36 @@ function renderCodeSection(title, value) {
 
 function renderCompletion(state) {
   const result = state.task_result;
-  const terminal = ["completed", "aborted", "empty"].includes(state.phase);
+  const terminal = ["completed", "aborted", "run_stopped", "empty"].includes(state.phase);
   elements.completionBanner.classList.toggle("hidden", !terminal);
   if (!terminal) return;
   elements.completionBanner.replaceChildren();
+  elements.completionBanner.classList.toggle("run-stopped-banner", state.phase === "run_stopped");
   const heading = document.createElement("h3");
-  heading.textContent = state.phase === "completed" ? "Расследование завершено" : "Сессия закрыта";
+  heading.textContent =
+    state.phase === "completed"
+      ? "Расследование завершено"
+      : state.phase === "run_stopped"
+        ? "Run остановлен средой соревнования"
+        : "Сессия закрыта";
   const copy = document.createElement("p");
   copy.textContent =
     state.phase === "completed"
       ? "Среда приняла терминальный вызов. Вторая задача запрошена не будет."
+      : state.phase === "run_stopped"
+        ? "Продолжить этот run невозможно. Хотите начать новый run?"
       : state.phase === "empty"
         ? "Для этого run среда не вернула задачу."
         : "Задача прервана без финального вердикта. Вторая задача запрошена не будет.";
   elements.completionBanner.append(heading, copy);
+  if (state.phase === "run_stopped" && state.can_restart) {
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.className = "restart-button";
+    restart.textContent = "Начать новый run";
+    restart.addEventListener("click", () => restartGame());
+    elements.completionBanner.append(restart);
+  }
   if (result) {
     const stats = document.createElement("p");
     stats.textContent = `reason=${result.completion_reason} · score=${result.total_reward} · calls=${result.tool_calls}`;
@@ -423,8 +444,11 @@ function renderTools(state) {
   if (!isActive) {
     selectedToolName = null;
     elements.toolFormArea.className = "tool-form-area empty-tool-state";
-    elements.toolFormArea.innerHTML =
-      '<div class="crosshair" aria-hidden="true">×</div><p>Сессия закрыта. Новые действия недоступны.</p>';
+    elements.toolFormArea.innerHTML = `<div class="crosshair" aria-hidden="true">×</div><p>${
+      state.phase === "run_stopped"
+        ? "Run остановлен средой. Продолжение недоступно."
+        : "Сессия закрыта. Новые действия недоступны."
+    }</p>`;
   } else if (selectedToolName) {
     const selected = tools.find((tool) => tool.name === selectedToolName);
     if (selected) renderToolForm(selected);
@@ -747,13 +771,18 @@ function buildPrimitiveNode(schema, _root, options) {
     if (suggestions.length) {
       const box = document.createElement("div");
       box.className = "id-suggestions";
-      suggestions.slice(0, 8).forEach((value) => {
+      suggestions.slice(0, 8).forEach((suggestion) => {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = value;
-        button.title = `Подставить ${value}`;
+        button.textContent = suggestion.id;
+        button.title = suggestion.label;
+        button.dataset.tooltip = suggestion.label;
+        button.setAttribute(
+          "aria-label",
+          `${suggestion.label}. Подставить ID ${suggestion.id}`,
+        );
         button.addEventListener("click", () => {
-          input.value = value;
+          input.value = suggestion.id;
           input.focus();
         });
         box.append(button);
@@ -811,31 +840,40 @@ function collectNode(node, forceRequired = false) {
 
 function knownIds(requestedField = "entity_id") {
   const values = {
-    entity_id: new Set(),
-    relation_id: new Set(),
-    ad_object_id: new Set(),
+    entity_id: new Map(),
+    relation_id: new Map(),
+    ad_object_id: new Map(),
   };
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i;
-  const add = (bucket, value) => {
+  const add = (bucket, value, label = null) => {
     if (typeof value === "string" && value.length <= 128 && uuidPattern.test(value)) {
-      values[bucket].add(value);
+      const fallbackType = bucket.replace(/_id$/, "");
+      const suggestion = {
+        id: value,
+        label: label || `${fallbackType}: ${value}`,
+      };
+      if (label || !values[bucket].has(value)) values[bucket].set(value, suggestion);
     }
   };
   const visit = (value, key = "", parent = null) => {
     if (typeof value === "string") {
       const decoded = parseMaybeJson(value);
       if (decoded !== value) visit(decoded, key);
-      if (key === "entity_id") add("entity_id", value);
-      if (key === "relation_id") add("relation_id", value);
-      if (key === "ad_object_id") add("ad_object_id", value);
+      if (key === "entity_id") add("entity_id", value, describeKnownObject(parent, "entity"));
+      if (key === "relation_id") {
+        add("relation_id", value, describeKnownObject(parent, "relation"));
+      }
+      if (key === "ad_object_id") {
+        add("ad_object_id", value, describeKnownObject(parent, "ad_object"));
+      }
       if (key === "source_id" || key === "target_id" || key === "host_id") {
         add("entity_id", value);
       }
       if (key === "id" && parent) {
         if (Object.hasOwn(parent, "source_id") && Object.hasOwn(parent, "target_id")) {
-          add("relation_id", value);
+          add("relation_id", value, describeKnownObject(parent, "relation"));
         } else {
-          add("entity_id", value);
+          add("entity_id", value, describeKnownObject(parent, "entity"));
         }
       }
       return;
@@ -854,7 +892,40 @@ function knownIds(requestedField = "entity_id") {
     bucket.delete(gameState?.run_id);
     bucket.delete(gameState?.task_id);
   });
-  return [...(values[requestedField] || values.entity_id)];
+  return [...(values[requestedField] || values.entity_id).values()];
+}
+
+function describeKnownObject(value, fallbackType) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const properties =
+    value.properties && typeof value.properties === "object" ? value.properties : {};
+  const type = String(value.type || fallbackType || "object");
+  let displayValue;
+
+  if (type === "windows_process") {
+    displayValue =
+      properties.cmdline ||
+      properties.image_path ||
+      properties.original_filename ||
+      properties.name;
+  } else if (type === "host") {
+    displayValue = properties.hostname || properties.name || properties.fqdn;
+  } else if (fallbackType === "relation") {
+    displayValue =
+      properties.name ||
+      (value.source_id && value.target_id ? `${value.source_id} → ${value.target_id}` : null);
+  } else {
+    displayValue =
+      properties.display_name ||
+      properties.name ||
+      properties.hostname ||
+      properties.cmdline ||
+      properties.image_path ||
+      properties.user ||
+      properties.sam_account_name;
+  }
+
+  return displayValue ? `${type}: ${displayValue}` : null;
 }
 
 elements.connectForm.addEventListener("submit", async (event) => {
@@ -892,6 +963,29 @@ elements.abortButton.addEventListener("click", async () => {
     setBusy(false);
   }
 });
+
+async function restartGame({ confirmActive = false } = {}) {
+  if (
+    confirmActive &&
+    gameState?.phase === "active" &&
+    !window.confirm(
+      "Текущая задача будет прервана без вердикта. После этого откроется форма нового run. Начать заново?",
+    )
+  ) {
+    return;
+  }
+  setBusy(true, "Подготавливаем новую игру…");
+  try {
+    updateState(await api("/api/session/restart", { method: "POST", body: "{}" }));
+    elements.connectForm.elements.token.focus();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+elements.restartButton.addEventListener("click", () => restartGame({ confirmActive: true }));
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-copy-target]");

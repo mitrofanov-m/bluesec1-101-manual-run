@@ -153,6 +153,7 @@ button {
 }
 
 .phase-aborted,
+.phase-run_stopped,
 .phase-error {
   color: var(--danger);
   border-color: #6a342e;
@@ -600,6 +601,26 @@ textarea {
   border-color: var(--danger);
 }
 
+.restart-game-button {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--line-bright);
+  background: rgba(141, 252, 174, 0.04);
+  color: var(--accent);
+  font: 10px var(--mono);
+}
+
+.restart-game-button:hover {
+  border-color: var(--accent);
+  background: rgba(141, 252, 174, 0.09);
+}
+
+.restart-game-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
 .workspace {
   padding: 30px clamp(22px, 3vw, 50px) 80px;
   min-height: calc(100vh - 72px);
@@ -786,6 +807,28 @@ textarea {
   font: 11px/1.5 var(--mono);
 }
 
+.run-stopped-banner {
+  border-color: #6a342e;
+  background: rgba(255, 112, 92, 0.07);
+}
+
+.run-stopped-banner h3 {
+  color: var(--danger);
+}
+
+.restart-button {
+  margin-top: 12px;
+  border: 1px solid var(--accent);
+  color: #06110d;
+  background: var(--accent);
+  padding: 10px 14px;
+  font-weight: 750;
+}
+
+.restart-button:hover {
+  background: #b0ffc5;
+}
+
 .current-observation {
   margin-top: 24px;
 }
@@ -956,17 +999,50 @@ textarea {
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 7px;
+  overflow: visible;
 }
 
 .id-suggestions button {
+  position: relative;
   max-width: 100%;
   border: 1px solid #29483d;
   color: #7ea697;
   background: #0b1a16;
   padding: 4px 6px;
   font: 8px var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.id-suggestions button::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  top: calc(100% + 7px);
+  width: max-content;
+  max-width: min(340px, 72vw);
+  padding: 8px 9px;
+  border: 1px solid var(--line-bright);
+  color: var(--text);
+  background: #10211d;
+  box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.3);
+  font: 10px/1.45 var(--mono);
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-3px);
+  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms ease;
+}
+
+.id-suggestions button:hover::after,
+.id-suggestions button:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
 }
 
 .tool-submit {

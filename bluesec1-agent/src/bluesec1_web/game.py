@@ -8,7 +8,11 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from bluesec1_client import RemoteBenchmarkClient, RemoteBenchmarkSession
+from bluesec1_client import (
+    RemoteBenchmarkClient,
+    RemoteBenchmarkSession,
+    RemoteRunNotFoundError,
+)
 
 
 class GameStateError(RuntimeError):
@@ -160,6 +164,11 @@ class InvestigationGame:
             }
             try:
                 response = await session.call_tool(tool_name, arguments)
+            except RemoteRunNotFoundError:
+                event["error"] = self._run_stopped_message()
+                self._history.append(event)
+                await self._mark_run_stopped_locked()
+                return self.snapshot()
             except Exception as error:
                 event["error"] = f"{type(error).__name__}: {error}"
                 self._history.append(event)
@@ -185,9 +194,20 @@ class InvestigationGame:
         """Abort the only task without submitting a verdict."""
         async with self._lock:
             session = self._require_active_session()
-            result = await session.abort_task(
-                error_message="Stopped by the user in the local manual investigation interface."
-            )
+            try:
+                result = await session.abort_task(
+                    error_message="Stopped by the user in the local manual investigation interface."
+                )
+            except RemoteRunNotFoundError:
+                self._history.append(
+                    {
+                        "kind": "run_stopped",
+                        "at": self._now(),
+                        "error": self._run_stopped_message(),
+                    }
+                )
+                await self._mark_run_stopped_locked()
+                return self.snapshot()
             self._task_result = result.model_dump(mode="json")
             self._history.append(
                 {
@@ -198,6 +218,37 @@ class InvestigationGame:
             )
             self._phase = "aborted"
             await self._close_run_locked()
+            return self.snapshot()
+
+    async def reset_stopped_run(self) -> dict[str, Any]:
+        """Forget a remotely stopped run so the user may explicitly create another."""
+        async with self._lock:
+            if self._phase != "run_stopped":
+                raise GameStateError(
+                    "Новый run можно начать здесь только после остановки текущего run средой.",
+                    code="run_not_stopped",
+                )
+            await self._close_run_locked()
+            self._reset_state_locked()
+            return self.snapshot()
+
+    async def restart(self) -> dict[str, Any]:
+        """Stop the current task when needed and return to a fresh start screen."""
+        async with self._lock:
+            if self._phase == "connecting":
+                raise GameStateError(
+                    "Дождитесь завершения текущего подключения.",
+                    code="connection_in_progress",
+                )
+            if self._phase == "active" and self._session is not None:
+                try:
+                    await self._session.abort_task(
+                        error_message="Restarted by the user in the local manual interface."
+                    )
+                except RemoteRunNotFoundError:
+                    pass
+            await self._close_run_locked()
+            self._reset_state_locked()
             return self.snapshot()
 
     async def shutdown(self) -> None:
@@ -221,6 +272,7 @@ class InvestigationGame:
             "one_task_only": True,
             "ever_started": self._ever_leased_task,
             "can_start": not self._ever_leased_task and self._client is None,
+            "can_restart": self._phase == "run_stopped",
             "run_id": self._run_id,
             "task_id": self._task_id,
             "initial_observation": self._initial_observation,
@@ -252,6 +304,30 @@ class InvestigationGame:
                 await client.aclose(reason="client_requested")
             except Exception as error:
                 self._close_warning = f"{type(error).__name__}: {error}"
+
+    async def _mark_run_stopped_locked(self) -> None:
+        self._phase = "run_stopped"
+        self._last_error = self._run_stopped_message()
+        await self._close_run_locked()
+
+    def _reset_state_locked(self) -> None:
+        self._phase = "ready"
+        self._ever_leased_task = False
+        self._run_id = None
+        self._task_id = None
+        self._initial_observation = None
+        self._current_observation = None
+        self._tool_specs = []
+        self._history = []
+        self._task_result = None
+        self._last_error = None
+        self._close_warning = None
+
+    @staticmethod
+    def _run_stopped_message() -> str:
+        return (
+            "Run был остановлен средой соревнования. Продолжить это расследование невозможно."
+        )
 
     async def _best_effort_close(self, client: RemoteBenchmarkClient) -> None:
         try:

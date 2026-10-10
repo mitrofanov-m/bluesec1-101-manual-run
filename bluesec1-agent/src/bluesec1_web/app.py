@@ -21,6 +21,7 @@ from bluesec1_client import (
     RemoteAuthorizationError,
     RemoteRateLimitError,
     RemoteRequestError,
+    RemoteRunNotFoundError,
     RemoteUnavailableError,
     RunCapacityExceededError,
 )
@@ -117,6 +118,19 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
         except Exception as error:
             raise _public_http_error(error) from error
 
+    @app.post("/api/session/reset")
+    async def reset_stopped_session() -> dict[str, Any]:
+        return await controller.reset_stopped_run()
+
+    @app.post("/api/session/restart")
+    async def restart_session() -> dict[str, Any]:
+        try:
+            return await controller.restart()
+        except GameStateError:
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
     return app
 
 
@@ -135,6 +149,11 @@ def _public_http_error(error: Exception) -> HTTPException:
         )
     if isinstance(error, RemoteRateLimitError):
         return HTTPException(status_code=429, detail="Среда временно ограничила новые run.")
+    if isinstance(error, RemoteRunNotFoundError):
+        return HTTPException(
+            status_code=410,
+            detail="Run был остановлен средой соревнования и больше недоступен.",
+        )
     if isinstance(error, RemoteRequestError):
         return HTTPException(status_code=400, detail=str(error))
     if isinstance(error, RemoteUnavailableError):

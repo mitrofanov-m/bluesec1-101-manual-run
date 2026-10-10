@@ -9,7 +9,14 @@ from fastapi.testclient import TestClient
 from bluesec1_client import PublicTask, RemoteRunNotFoundError, TaskResult, ToolCallResult
 from bluesec1_web.app import create_app
 from bluesec1_web.game import GameStateError, InvestigationGame
-from bluesec1_web.mentor import AdviceReply, ExplanationReply, HelpReply, MentorConfig
+from bluesec1_web.mentor import (
+    AdviceReply,
+    CloseReply,
+    ExplanationReply,
+    HelpReply,
+    MentorConfig,
+    evidence_call_fingerprint,
+)
 
 TOOL_CATALOG = [
     {
@@ -136,7 +143,7 @@ class FakeMentor:
         return self.config.public()
 
     async def advice(self, context: dict[str, Any]) -> AdviceReply:
-        assert "available_tools" in context
+        assert context["available_tool_names"] == ["get_entity", "finish_investigation"]
         self.received_contexts.append(context)
         return AdviceReply(
             title="Не паникуем",
@@ -152,11 +159,25 @@ class FakeMentor:
         self.received_contexts.append(context)
         self.received_tools = tools
         return HelpReply(
+            action="call_tool",
             explanation="Сначала читаем исходную сущность.",
             tool_name="get_entity",
             arguments_json=json.dumps(
                 {"entity_id": "entity-01", "reasoning": "Inspect the trigger."}
             ),
+        )
+
+    async def prepare_close(
+        self,
+        context: dict[str, Any],
+        tool: dict[str, Any],
+    ) -> CloseReply:
+        self.received_contexts.append(context)
+        assert tool["name"] == "finish_investigation"
+        return CloseReply(
+            action="prepare_close",
+            explanation="Доказательств достаточно для проверки вердикта.",
+            arguments_json=json.dumps({"submission": {}}),
         )
 
     async def explain(
@@ -398,6 +419,7 @@ def test_button_driven_mentor_endpoints_use_secret_free_state() -> None:
             },
         )
         explanation = browser.post("/api/mentor/explain", json={"history_index": 1})
+        close_draft = browser.post("/api/mentor/close", json={})
 
     assert started.status_code == 200
     assert started.json()["mentor"] == {
@@ -409,12 +431,17 @@ def test_button_driven_mentor_endpoints_use_secret_free_state() -> None:
     assert "runtime-secret" not in json.dumps(started.json())
     assert advice.json()["title"] == "Не паникуем"
     assert next_step.json()["tool_name"] == "get_entity"
+    assert next_step.json()["action"] == "call_tool"
     assert tool_result.status_code == 200
     assert explanation.json()["meaning"] == "Инструмент нашёл сущность."
-    assert [tool["name"] for tool in mentor_factory.instances[0].received_tools] == [
-        "get_entity"
-    ]
-    assert mentor_factory.instances[0].received_contexts[1]["previous_mentor_messages"] == [
+    assert close_draft.json() == {
+        "action": "prepare_close",
+        "explanation": "Доказательств достаточно для проверки вердикта.",
+        "tool_name": "finish_investigation",
+        "arguments": {"submission": {}},
+    }
+    assert [tool["name"] for tool in mentor_factory.instances[0].received_tools] == ["get_entity"]
+    assert mentor_factory.instances[0].received_contexts[1]["conversation_history"] == [
         {
             "kind": "advice",
             "title": "Не паникуем",
@@ -422,6 +449,126 @@ def test_button_driven_mentor_endpoints_use_secret_free_state() -> None:
             "details": ["Проверьте исходный процесс."],
         }
     ]
+    assert mentor_factory.instances[0].received_contexts[2]["conversation_history"][1] == {
+        "kind": "help",
+        "action": "call_tool",
+        "explanation": "Сначала читаем исходную сущность.",
+    }
+    assert mentor_factory.instances[0].received_contexts[2]["completed_calls"][0] == {
+        "tool_name": "get_entity",
+        "fingerprint": evidence_call_fingerprint(
+            "get_entity",
+            {"entity_id": "entity-01", "reasoning": "Inspect the trigger."},
+        ),
+        "status": "ok",
+    }
+    assert mentor_factory.instances[0].received_contexts[2]["latest_tool_call"] == {
+        "tool_name": "get_entity",
+        "arguments": {"entity_id": "entity-01", "reasoning": "Inspect the trigger."},
+        "completed": True,
+        "status": "ok",
+        "result": {"entity_id": "entity-01"},
+        "reward": 1.0,
+        "terminated": False,
+        "error": None,
+    }
+    assert mentor_factory.instances[0].received_contexts[2]["attention_tool_fields"] == [
+        {"field": "entity_id", "value": "entity-01", "source": "get_entity#1"},
+        {"field": "id", "value": "entity-01", "source": "initial_observation"},
+        {"field": "type", "value": "windows_process", "source": "initial_observation"},
+    ]
+
+
+def test_mentor_context_keeps_only_latest_full_tool_result() -> None:
+    game, _, _ = make_game()
+    game._initial_observation = {  # noqa: SLF001 - focused context serialization test
+        "alert_text": json.dumps({"entity_id": "alert-entity", "type": "windows_process"}),
+        "available_tools": json.dumps(TOOL_CATALOG),
+    }
+    game._tool_specs = TOOL_CATALOG  # noqa: SLF001
+    game._history = [  # noqa: SLF001
+        {
+            "kind": "tool_call",
+            "tool_name": "get_entity",
+            "arguments": {"entity_id": "old-entity", "reasoning": "Read old."},
+            "response": {
+                "observation": {
+                    "last_tool_result": {
+                        "entity_id": "old-entity",
+                        "hostname": "old-host",
+                        "blob": "old-heavy-payload" * 1_000,
+                    }
+                },
+                "info": {"tool_status": "ok"},
+                "terminated": False,
+            },
+        },
+        {
+            "kind": "tool_call",
+            "tool_name": "get_entity",
+            "arguments": {"entity_id": "new-entity", "reasoning": "Read new."},
+            "response": {
+                "observation": {
+                    "last_tool_result": {
+                        "entity_id": "new-entity",
+                        "cmdline": "powershell.exe -enc ...",
+                    }
+                },
+                "info": {"tool_status": "ok"},
+                "terminated": False,
+            },
+        },
+    ]
+    game._remember_mentor_message(  # noqa: SLF001
+        "help",
+        {
+            "action": "call_tool",
+            "explanation": "Проверим новую сущность.",
+            "tool_name": "get_entity",
+            "arguments": {"entity_id": "new-entity", "reasoning": "Read new."},
+        },
+    )
+
+    context = game._mentor_context()  # noqa: SLF001
+
+    assert context["conversation_history"] == [
+        {
+            "kind": "help",
+            "action": "call_tool",
+            "explanation": "Проверим новую сущность.",
+        }
+    ]
+    assert context["completed_calls"] == [
+        {
+            "tool_name": "get_entity",
+            "fingerprint": evidence_call_fingerprint(
+                "get_entity", {"entity_id": "old-entity", "reasoning": "Read old."}
+            ),
+            "status": "ok",
+        },
+        {
+            "tool_name": "get_entity",
+            "fingerprint": evidence_call_fingerprint(
+                "get_entity", {"entity_id": "new-entity", "reasoning": "Read new."}
+            ),
+            "status": "ok",
+        },
+    ]
+    assert context["latest_tool_call"]["result"] == {
+        "entity_id": "new-entity",
+        "cmdline": "powershell.exe -enc ...",
+    }
+    assert {fact["value"] for fact in context["attention_tool_fields"]} >= {
+        "old-entity",
+        "old-host",
+        "new-entity",
+        "alert-entity",
+    }
+    rendered_context = json.dumps(context)
+    assert "old-heavy-payload" not in rendered_context
+    assert '"arguments"' in json.dumps(context["latest_tool_call"])
+    assert all("arguments" not in call for call in context["completed_calls"])
+    assert len(rendered_context) < 5_000
 
 
 def test_openai_mentor_requires_endpoint_and_key() -> None:
@@ -521,7 +668,11 @@ def test_http_api_serves_page_and_browser_safe_task_state() -> None:
         assert page.status_code == 200
         assert "BlueSec Manual Lab" in page.text
         assert "Документация" in page.text
+        assert "О приложении" in page.text
         assert "Инструменты расследования" in page.text
+        assert "SIEMён Петрович" in page.text
+        assert "Помоги закрыть" in page.text
+        assert "История, алерт и другие вызовы в этот запрос не передаются" in page.text
         assert response.status_code == 200
         assert response.json()["task_id"] == "task-01"
         assert "secret-token" not in response.text

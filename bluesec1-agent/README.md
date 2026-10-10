@@ -72,10 +72,14 @@ the run; the interface never requests the next task. You can also abort without
 submitting a verdict.
 
 The left-side mentor, **SIEMён Петрович**, is controlled only by buttons. **Дай
-совет** summarizes the current evidence, **Помоги решить** explains and performs
-one non-terminal tool call, and the `?` button beside a tool result explains the
-security-relevant fields. The mentor cannot automatically submit the final
-verdict.
+совет** summarizes the current evidence, while remembering earlier mentor replies;
+**Помоги решить** explains and performs one new non-terminal tool call without
+repeating an identical completed lookup; and **Помоги закрыть** drafts the terminal
+tool arguments in the form for human review. The `?` button beside a tool result
+explains the security-relevant fields. The mentor cannot automatically submit the
+final verdict. Mentor prompts retain its recent replies, semantic fingerprints of
+completed calls, the latest full tool result, and a bounded set of locally extracted
+attention fields instead of replaying every historical response.
 
 ## What a task looks like
 

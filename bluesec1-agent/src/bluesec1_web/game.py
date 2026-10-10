@@ -18,12 +18,14 @@ from bluesec1_client import (
 
 from .mentor import (
     AdviceReply,
+    CloseReply,
     ExplanationReply,
     HelpReply,
     InvestigationMentor,
     MentorConfig,
     MentorError,
     MentorService,
+    evidence_call_fingerprint,
 )
 
 
@@ -38,6 +40,71 @@ class GameStateError(RuntimeError):
 
 ClientFactory = Callable[..., RemoteBenchmarkClient]
 MentorFactory = Callable[[MentorConfig], InvestigationMentor]
+
+_ATTENTION_FIELD_NAMES = frozenset(
+    {
+        "action",
+        "cmdline",
+        "command_line",
+        "destination_ip",
+        "display_name",
+        "dns_hostname",
+        "domain",
+        "event_id",
+        "filename",
+        "hostname",
+        "image_path",
+        "ip",
+        "ip_address",
+        "kind",
+        "md5",
+        "name",
+        "original_filename",
+        "path",
+        "pid",
+        "port",
+        "ppid",
+        "registry_path",
+        "sam_account_name",
+        "sender",
+        "sha1",
+        "sha256",
+        "source_ip",
+        "status",
+        "subject",
+        "target",
+        "timestamp",
+        "type",
+        "url",
+        "user",
+        "username",
+        "value_data",
+        "value_name",
+        "verdict",
+    }
+)
+
+
+def _decode_json_container(value: Any) -> Any:
+    """Decode runtime fields that contain a JSON object or array as text."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped.startswith(("{", "[")):
+        return value
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return value
+
+
+def _is_attention_field(field_name: str) -> bool:
+    normalized = field_name.lower()
+    return (
+        normalized == "id"
+        or normalized.endswith(("_hash", "_id", "_ip", "_name", "_path", "_port"))
+        or normalized in _ATTENTION_FIELD_NAMES
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,18 +202,58 @@ class InvestigationGame:
                 tool for tool in self._tool_specs if tool.get("name") != "finish_investigation"
             ]
             reply: HelpReply = await mentor.next_step(self._mentor_context(), safe_tools)
+            if reply.action == "ready_to_close":
+                payload = {
+                    "action": reply.action,
+                    "explanation": reply.explanation,
+                    "tool_name": None,
+                    "arguments": None,
+                }
+                self._remember_mentor_message("help", payload)
+                return payload
             advertised_names = {tool["name"] for tool in safe_tools}
             if reply.tool_name not in advertised_names:
                 raise MentorError("Наставник выбрал недоступный или терминальный инструмент.")
+            arguments = reply.arguments()
             self._remember_mentor_message(
                 "help",
-                {"explanation": reply.explanation, "tool_name": reply.tool_name},
+                {
+                    "action": reply.action,
+                    "explanation": reply.explanation,
+                    "tool_name": reply.tool_name,
+                    "arguments": arguments,
+                },
             )
             return {
+                "action": reply.action,
                 "explanation": reply.explanation,
                 "tool_name": reply.tool_name,
-                "arguments": reply.arguments(),
+                "arguments": arguments,
             }
+
+    async def mentor_prepare_close(self) -> dict[str, Any]:
+        """Ask the mentor to draft the terminal call without submitting it."""
+        async with self._lock:
+            self._require_active_session()
+            mentor = self._require_mentor()
+            finish_tool = next(
+                (tool for tool in self._tool_specs if tool.get("name") == "finish_investigation"),
+                None,
+            )
+            if finish_tool is None:
+                raise MentorError("Среда не предоставила инструмент завершения расследования.")
+            reply: CloseReply = await mentor.prepare_close(
+                self._mentor_context(),
+                finish_tool,
+            )
+            payload: dict[str, Any] = {
+                "action": reply.action,
+                "explanation": reply.explanation,
+                "tool_name": "finish_investigation" if reply.action == "prepare_close" else None,
+                "arguments": reply.arguments() if reply.action == "prepare_close" else None,
+            }
+            self._remember_mentor_message("close", payload)
+            return payload
 
     async def mentor_explain(self, history_index: int) -> dict[str, Any]:
         """Explain a completed tool call selected by its stable history index."""
@@ -360,22 +467,152 @@ class InvestigationGame:
         return self._mentor
 
     def _mentor_context(self) -> dict[str, Any]:
-        """Build a secret-free evidence bundle for the LLM."""
+        """Build a compact, secret-free evidence bundle for the stateless LLM."""
+        tool_events = [item for item in self._history if item.get("kind") == "tool_call"]
+        completed_calls = [
+            self._mentor_completed_call(item)
+            for item in tool_events
+            if isinstance(item.get("response"), dict) and not item.get("error")
+        ]
         return {
+            # The dialogue contains only what the mentor said. Tool arguments and results
+            # live in the compact investigation memory below instead of being repeated in
+            # every previous message and observation.
+            "conversation_history": self._mentor_messages[-12:],
+            "completed_calls": completed_calls,
+            "latest_tool_call": (
+                self._mentor_tool_call_event(tool_events[-1]) if tool_events else None
+            ),
+            "attention_tool_fields": self._mentor_attention_fields(tool_events),
             "phase": self._phase,
             "task_id": self._task_id,
-            "initial_observation": self._initial_observation,
-            "current_observation": self._current_observation,
-            "history": self._history,
-            "available_tools": self._tool_specs,
-            "previous_mentor_messages": self._mentor_messages[-8:],
+            "initial_observation": self._mentor_observation(self._initial_observation),
+            "current_state": self._mentor_observation(self._current_observation),
+            "available_tool_names": [tool.get("name") for tool in self._tool_specs],
         }
 
+    @staticmethod
+    def _mentor_observation(observation: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Remove tool catalogs and the duplicated latest result from an observation."""
+        if observation is None:
+            return None
+        return {
+            key: value
+            for key, value in observation.items()
+            if key not in {"available_tools", "last_tool_result"}
+        }
+
+    @staticmethod
+    def _mentor_completed_call(event: dict[str, Any]) -> dict[str, Any]:
+        """Retain only an opaque fingerprint needed to reject an old lookup."""
+        response = event.get("response")
+        response = response if isinstance(response, dict) else {}
+        info = response.get("info")
+        info = info if isinstance(info, dict) else {}
+        tool_name = str(event.get("tool_name") or "")
+        arguments = event.get("arguments")
+        arguments = arguments if isinstance(arguments, dict) else {}
+        return {
+            "tool_name": tool_name,
+            "fingerprint": evidence_call_fingerprint(tool_name, arguments),
+            "status": info.get("tool_status"),
+        }
+
+    @staticmethod
+    def _mentor_tool_call_event(event: dict[str, Any]) -> dict[str, Any]:
+        """Keep the latest call and its result available in full."""
+        response = event.get("response")
+        response = response if isinstance(response, dict) else {}
+        observation = response.get("observation")
+        observation = observation if isinstance(observation, dict) else {}
+        info = response.get("info")
+        info = info if isinstance(info, dict) else {}
+        result = observation.get("last_tool_result")
+        if result in (None, "", {}, []):
+            result = info.get("tool_result")
+        if isinstance(result, str) and result.lstrip().startswith(("{", "[")):
+            with suppress(json.JSONDecodeError):
+                result = json.loads(result)
+        return {
+            "tool_name": event.get("tool_name"),
+            "arguments": event.get("arguments"),
+            "completed": bool(response),
+            "status": info.get("tool_status"),
+            "result": result,
+            "reward": response.get("reward"),
+            "terminated": response.get("terminated"),
+            "error": event.get("error"),
+        }
+
+    def _mentor_attention_fields(self, tool_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Extract bounded high-signal scalar facts without asking the LLM to summarize."""
+        facts: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        sources: list[tuple[str, Any]] = []
+        for index, event in reversed(list(enumerate(tool_events, start=1))):
+            full_event = self._mentor_tool_call_event(event)
+            sources.append((f"{event.get('tool_name') or 'tool'}#{index}", full_event["result"]))
+        sources.append(("initial_observation", self._mentor_observation(self._initial_observation)))
+
+        for source, value in sources:
+            self._collect_attention_fields(value, source=source, facts=facts, seen=seen)
+            if len(facts) >= 96:
+                break
+        return facts[:96]
+
+    @classmethod
+    def _collect_attention_fields(
+        cls,
+        value: Any,
+        *,
+        source: str,
+        facts: list[dict[str, Any]],
+        seen: set[tuple[str, str]],
+        field_name: str | None = None,
+    ) -> None:
+        if len(facts) >= 96:
+            return
+        value = _decode_json_container(value)
+        if isinstance(value, dict):
+            for key, item in value.items():
+                cls._collect_attention_fields(
+                    item,
+                    source=source,
+                    facts=facts,
+                    seen=seen,
+                    field_name=str(key),
+                )
+            return
+        if isinstance(value, list):
+            for item in value:
+                cls._collect_attention_fields(
+                    item,
+                    source=source,
+                    facts=facts,
+                    seen=seen,
+                    field_name=field_name,
+                )
+            return
+        if field_name is None or not _is_attention_field(field_name):
+            return
+        if not isinstance(value, (str, int, float, bool)) or len(str(value)) > 500:
+            return
+        identity = (field_name, json.dumps(value, ensure_ascii=False, default=str))
+        if identity in seen:
+            return
+        seen.add(identity)
+        facts.append({"field": field_name, "value": value, "source": source})
+
     def _remember_mentor_message(self, kind: str, payload: dict[str, Any]) -> None:
-        """Keep short secret-free memory so repeated button presses add new value."""
-        self._mentor_messages.append({"kind": kind, **payload})
-        if len(self._mentor_messages) > 8:
-            self._mentor_messages = self._mentor_messages[-8:]
+        """Keep only the mentor's answer, never prior tool arguments or verdict drafts."""
+        message = {"kind": kind}
+        retained_fields = (
+            ("title", "summary", "details") if kind == "advice" else ("action", "explanation")
+        )
+        message.update({key: payload[key] for key in retained_fields if key in payload})
+        self._mentor_messages.append(message)
+        if len(self._mentor_messages) > 12:
+            self._mentor_messages = self._mentor_messages[-12:]
 
     async def _start_run_locked(self, settings: ConnectionSettings) -> dict[str, Any]:
         """Open one run from retained settings while the game lock is held."""

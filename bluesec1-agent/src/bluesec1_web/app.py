@@ -175,6 +175,15 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
         except Exception as error:
             raise _public_http_error(error) from error
 
+    @app.post("/api/mentor/close")
+    async def mentor_close() -> dict[str, Any]:
+        try:
+            return await controller.mentor_prepare_close()
+        except (GameStateError, MentorError):
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
     @app.post("/api/mentor/explain")
     async def mentor_explain(payload: ExplainRequest) -> dict[str, Any]:
         try:

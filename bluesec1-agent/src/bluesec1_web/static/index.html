@@ -176,6 +176,7 @@
             <div class="mentor-actions">
               <button id="mentorAdviceButton" type="button">Дай совет</button>
               <button id="mentorHelpButton" type="button">Помоги решить</button>
+              <button id="mentorCloseButton" type="button">Помоги закрыть</button>
             </div>
           </section>
           <button id="restartButton" class="restart-game-button" type="button">
@@ -253,17 +254,75 @@
         <div class="docs-layout">
           <nav class="docs-tabs" aria-label="Страницы документации">
             <p>СТРАНИЦЫ</p>
-            <button class="docs-tab active" type="button" data-doc-page="competition">
+            <button class="docs-tab active" type="button" data-doc-page="about">
               <span>01</span>
+              <strong>О приложении</strong>
+            </button>
+            <button class="docs-tab" type="button" data-doc-page="competition">
+              <span>02</span>
               <strong>О соревновании</strong>
             </button>
             <button class="docs-tab" type="button" data-doc-page="tools">
-              <span>02</span>
+              <span>03</span>
               <strong>Доступные инструменты</strong>
+            </button>
+            <button class="docs-tab" type="button" data-doc-page="mentor">
+              <span>04</span>
+              <strong>SIEMён Петрович</strong>
             </button>
           </nav>
           <div class="docs-content">
-            <article class="docs-page" data-doc-content="competition">
+            <article class="docs-page" data-doc-content="about">
+              <p class="eyebrow">BLUESEC MANUAL LAB</p>
+              <h3>О приложении</h3>
+              <p class="docs-lead">
+                BlueSec Manual Lab — локальный тренажёр ручного SOC-расследования.
+                Вы видите те же вводные и разрешённые инструменты, которые получила бы
+                автономная модель, но каждый шаг и финальный вердикт остаются за вами.
+              </p>
+
+              <ol class="docs-flow" aria-label="Работа в приложении">
+                <li><span>01</span><strong>Подключиться</strong><p>Указать рантайм, токен и способ подключения наставника.</p></li>
+                <li><span>02</span><strong>Собрать факты</strong><p>Изучать алерт и вызывать только инструменты текущей задачи.</p></li>
+                <li><span>03</span><strong>Принять решение</strong><p>Самостоятельно отправить доказательный итог расследования.</p></li>
+              </ol>
+
+              <div class="docs-overview-grid">
+                <section class="docs-overview-card docs-overview-wide">
+                  <h4>Три рабочие зоны</h4>
+                  <p>
+                    Слева находится дело и наставник, в центре — исходный алерт и полная
+                    хронология вызовов, справа — разрешённые инструменты и их параметры.
+                    Ответы среды не пересказываются интерфейсом: исходный JSON всегда можно
+                    раскрыть и проверить самостоятельно.
+                  </p>
+                </section>
+                <section class="docs-overview-card">
+                  <h4>Настоящие вызовы</h4>
+                  <p>
+                    Кнопка инструмента отправляет реальный <code>tool_call</code> в BlueSec.
+                    Результат, награда, статус и полный ответ среды сохраняются в ленте.
+                  </p>
+                </section>
+                <section class="docs-overview-card">
+                  <h4>Одна задача</h4>
+                  <p>
+                    Один запуск приложения арендует только первую задачу run. После финального
+                    вердикта следующая задача автоматически не запрашивается.
+                  </p>
+                </section>
+                <section class="docs-overview-card docs-overview-wide docs-score-card">
+                  <h4>Локальные секреты</h4>
+                  <p>
+                    Токен рантайма и API-ключ наставника хранятся только в памяти локального
+                    сервера и не возвращаются в состояние браузера. Завершение изучения очищает
+                    параметры подключения.
+                  </p>
+                </section>
+              </div>
+            </article>
+
+            <article class="docs-page hidden" data-doc-content="competition">
               <p class="eyebrow">BLUESEC OVERVIEW</p>
               <h3>Как устроено соревнование</h3>
               <p class="docs-lead">
@@ -392,6 +451,79 @@
                 <section class="tool-doc-card finish-doc-card">
                   <code>finish_investigation</code>
                   <p>Отправляет финальный вердикт и безвозвратно завершает текущую задачу.</p>
+                </section>
+              </div>
+            </article>
+
+            <article class="docs-page hidden" data-doc-content="mentor">
+              <p class="eyebrow">SOC MENTOR</p>
+              <h3>SIEMён Петрович</h3>
+              <p class="docs-lead">
+                Пиксельный наставник для первой смены в SOC: объясняет простым языком,
+                иногда ворчит и шутит, но не принимает финальное решение за аналитика.
+                Взаимодействие намеренно ограничено кнопками вместо открытого чата.
+              </p>
+
+              <div class="docs-overview-grid">
+                <section class="docs-overview-card">
+                  <h4>Codex CLI</h4>
+                  <p>
+                    Использует локальную авторизацию Codex. На стартовом экране задаётся
+                    модель; reasoning фиксирован на <code>medium</code>. Отдельный API-ключ
+                    в приложении не нужен.
+                  </p>
+                </section>
+                <section class="docs-overview-card">
+                  <h4>OpenAI API</h4>
+                  <p>
+                    Подключается по схеме <code>endpoint + API key + model</code> через
+                    Responses API. Endpoint позволяет использовать нужный совместимый адрес,
+                    а ключ остаётся в памяти локального сервера.
+                  </p>
+                </section>
+
+                <section class="docs-overview-card docs-overview-wide">
+                  <h4>Что умеет наставник</h4>
+                  <div class="docs-verdicts">
+                    <div>
+                      <strong>Дай совет</strong>
+                      <p>Кратко собирает текущий статус, учитывает последние факты и подмечает детали для следующих шагов.</p>
+                    </div>
+                    <div>
+                      <strong>Помоги решить</strong>
+                      <p>С учётом всей истории выбирает новый безопасный шаг, объясняет цель, заполняет аргументы и запускает вызов.</p>
+                    </div>
+                    <div>
+                      <strong>Помоги закрыть</strong>
+                      <p>Проверяет достаточность доказательств и готовит финальный вердикт в форме. Отправка всегда остаётся за аналитиком.</p>
+                    </div>
+                    <div>
+                      <strong>Кнопка «?»</strong>
+                      <p>Атомарно объясняет только выбранный результат инструмента. История, алерт и другие вызовы в этот запрос не передаются.</p>
+                    </div>
+                    <div>
+                      <strong>История сообщений</strong>
+                      <p>Новые ответы печатаются снизу и не затирают предыдущие. Один ответ занимает не больше двух коротких абзацев.</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="docs-overview-card">
+                  <h4>Какие данные видит</h4>
+                  <p>
+                    Для совета, следующего шага и подготовки вердикта передаются ответы
+                    наставника, компактные отпечатки старых вызовов, полный результат только
+                    последнего инструмента и выделенные значимые поля. Токены и ключи в этот
+                    контекст не входят. Для <code>?</code> передаётся только выбранный результат.
+                  </p>
+                </section>
+                <section class="docs-overview-card">
+                  <h4>Чего не делает</h4>
+                  <p>
+                    Не отправляет <code>finish_investigation</code> самостоятельно и не
+                    придумывает отсутствующие ID. Подготовленный вердикт нужно сверить с
+                    исходными данными среды и отправить вручную.
+                  </p>
                 </section>
               </div>
             </article>

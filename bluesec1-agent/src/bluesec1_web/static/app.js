@@ -9,13 +9,14 @@ let mentorMessageCounter = 0;
 let mentorTypingGeneration = 0;
 let mentorTypingQueue = Promise.resolve();
 let greetedTaskId = null;
+let mentorRecommendedAction = null;
 const toolExplanations = new Map();
 
 const initialMentorGreeting = Object.freeze({
   title: "Первая смена? Держись.",
   paragraphs: [
     "Привет! Я SIEMён Петрович. Добро пожаловать в SOC: кофе слева, паника запрещена, а алерты, конечно, уже горят.",
-    "Спокойно читай вводные и ищи факты. Застрянешь — жми «Дай совет», совсем застрянешь — «Помоги решить». Я поворчу, но вытащу.",
+    "Спокойно читай вводные и ищи факты. Застрянешь — жми «Дай совет», совсем застрянешь — «Помоги решить», соберёшь доказательства — «Помоги закрыть».",
   ],
 });
 
@@ -41,6 +42,7 @@ const elements = {
   mentorReply: document.querySelector("#mentorReply"),
   mentorAdviceButton: document.querySelector("#mentorAdviceButton"),
   mentorHelpButton: document.querySelector("#mentorHelpButton"),
+  mentorCloseButton: document.querySelector("#mentorCloseButton"),
   docsNavButton: document.querySelector("#docsNavButton"),
   toolsDocsButton: document.querySelector("#toolsDocsButton"),
   docsOverlay: document.querySelector("#docsOverlay"),
@@ -87,7 +89,7 @@ function showToast(message) {
   window.setTimeout(() => elements.toast.classList.add("hidden"), 5500);
 }
 
-function openDocs(page = "competition") {
+function openDocs(page = "about") {
   const wasHidden = elements.docsOverlay.classList.contains("hidden");
   if (wasHidden) docsLastFocused = document.activeElement;
   elements.docsTabs.forEach((tab) => {
@@ -269,6 +271,16 @@ function renderMentor(state) {
   const config = state.mentor;
   elements.mentorAdviceButton.disabled = !isActive;
   elements.mentorHelpButton.disabled = !isActive;
+  elements.mentorCloseButton.disabled =
+    !isActive || !(state.available_tools || []).some((tool) => tool.name === "finish_investigation");
+  elements.mentorHelpButton.classList.toggle(
+    "is-recommended",
+    isActive && mentorRecommendedAction === "help",
+  );
+  elements.mentorCloseButton.classList.toggle(
+    "is-recommended",
+    isActive && mentorRecommendedAction === "close",
+  );
   elements.mentorStatus.textContent = config
     ? `${config.provider === "codex" ? "Codex" : "OpenAI API"} · ${config.model} · reasoning ${config.reasoning_effort}`
     : "Наставник не настроен.";
@@ -277,20 +289,53 @@ function renderMentor(state) {
 
 function mentorParagraphs(reply) {
   if (Array.isArray(reply.paragraphs)) {
-    return reply.paragraphs.map(String).filter(Boolean).slice(0, 2);
+    return reply.paragraphs
+      .map((paragraph, index) => compactMentorText(paragraph, index === 0 ? 240 : 200))
+      .filter(Boolean)
+      .slice(0, 2);
   }
   const paragraphs = [];
-  if (reply.summary) paragraphs.push(String(reply.summary));
-  if (reply.details?.length) paragraphs.push(reply.details.map(String).join(" "));
+  if (reply.summary) paragraphs.push(compactMentorText(reply.summary, 240));
+  if (reply.details?.length) {
+    paragraphs.push(compactMentorText(reply.details.map(String).join(" "), 200));
+  }
   return paragraphs.filter(Boolean).slice(0, 2);
+}
+
+function compactMentorText(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  const clipped = text.slice(0, limit + 1);
+  const sentenceEnd = Math.max(
+    clipped.lastIndexOf(". "),
+    clipped.lastIndexOf("! "),
+    clipped.lastIndexOf("? "),
+  );
+  if (sentenceEnd >= Math.floor(limit * 0.55)) return clipped.slice(0, sentenceEnd + 1);
+  const wordEnd = clipped.lastIndexOf(" ");
+  return `${clipped.slice(0, wordEnd > 0 ? wordEnd : limit).trim()}…`;
 }
 
 function resetMentorChat() {
   mentorTypingGeneration += 1;
   mentorTypingQueue = Promise.resolve();
   mentorMessages = [];
+  mentorRecommendedAction = null;
   elements.mentorReply.replaceChildren();
   elements.mentorReply.classList.add("hidden");
+}
+
+function recommendMentorAction(action = null) {
+  mentorRecommendedAction = action;
+  const isActive = gameState?.phase === "active";
+  elements.mentorHelpButton.classList.toggle(
+    "is-recommended",
+    isActive && action === "help",
+  );
+  elements.mentorCloseButton.classList.toggle(
+    "is-recommended",
+    isActive && action === "close",
+  );
 }
 
 function appendMentorMessage(reply, { animate = true } = {}) {
@@ -794,6 +839,7 @@ async function executeTool(tool, argumentsPayload, { confirmTerminal = false } =
   ) {
     return false;
   }
+  recommendMentorAction();
   setBusy(true, `Выполняется ${tool.name}…`);
   try {
     const state = await api("/api/tool", {
@@ -911,6 +957,10 @@ function buildVariantNode(schema, variants, root, options) {
     content.replaceChildren(wrapper._activeNode);
   };
   select.addEventListener("change", renderVariant);
+  wrapper._variants = variants;
+  wrapper._rootSchema = root;
+  wrapper._variantSelect = select;
+  wrapper._renderVariant = renderVariant;
   contentWrapper.append(select, content);
   wrapper.append(contentWrapper);
   renderVariant();
@@ -1145,6 +1195,13 @@ function fillNode(node, value) {
     node._enabled.dispatchEvent(new Event("change"));
   }
   if (kind === "variant") {
+    const matchingIndex = (node._variants || []).findIndex((variant) =>
+      schemaVariantMatchesValue(variant, node._rootSchema, value),
+    );
+    if (matchingIndex >= 0 && Number(node._variantSelect.value) !== matchingIndex) {
+      node._variantSelect.value = String(matchingIndex);
+      node._renderVariant();
+    }
     fillNode(node._activeNode, value);
     return;
   }
@@ -1167,6 +1224,20 @@ function fillNode(node, value) {
     return;
   }
   if (node._input) node._input.value = String(value);
+}
+
+function schemaVariantMatchesValue(schema, root, value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const resolved = resolveSchema(schema, root);
+  const discriminators = Object.entries(resolved.properties || {}).filter(([, property]) => {
+    const resolvedProperty = resolveSchema(property, root);
+    return Object.hasOwn(resolvedProperty, "const");
+  });
+  if (!discriminators.length) return false;
+  return discriminators.every(([name, property]) => {
+    const resolvedProperty = resolveSchema(property, root);
+    return value[name] === resolvedProperty.const;
+  });
 }
 
 function knownIds(requestedField = "entity_id") {
@@ -1275,6 +1346,7 @@ syncMentorProviderFields();
 elements.mentorAdviceButton.addEventListener("click", async () => {
   elements.mentorAdviceButton.disabled = true;
   elements.mentorHelpButton.disabled = true;
+  elements.mentorCloseButton.disabled = true;
   elements.mentorStatus.textContent = "Собираю улики в одну картину…";
   try {
     const reply = await api("/api/mentor/advice", { method: "POST", body: "{}" });
@@ -1287,11 +1359,21 @@ elements.mentorAdviceButton.addEventListener("click", async () => {
 });
 
 elements.mentorHelpButton.addEventListener("click", async () => {
+  recommendMentorAction();
   elements.mentorAdviceButton.disabled = true;
   elements.mentorHelpButton.disabled = true;
+  elements.mentorCloseButton.disabled = true;
   elements.mentorStatus.textContent = "Выбираю следующий шаг. Да, опять работать…";
   try {
     const step = await api("/api/mentor/help", { method: "POST", body: "{}" });
+    if (step.action === "ready_to_close") {
+      await appendMentorMessage({
+        title: "Новые шаги закончились",
+        paragraphs: [step.explanation, "Проверь вариант через «Помоги закрыть»."],
+      });
+      recommendMentorAction("close");
+      return;
+    }
     const tool = (gameState.available_tools || []).find((item) => item.name === step.tool_name);
     if (!tool || tool.name === "finish_investigation") {
       throw new Error("Наставник выбрал недоступный безопасный шаг.");
@@ -1310,6 +1392,46 @@ elements.mentorHelpButton.addEventListener("click", async () => {
     await appendMentorMessage(message);
     await new Promise((resolve) => window.setTimeout(resolve, 250));
     await executeTool(tool, step.arguments);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    renderMentor(gameState);
+  }
+});
+
+elements.mentorCloseButton.addEventListener("click", async () => {
+  recommendMentorAction();
+  elements.mentorAdviceButton.disabled = true;
+  elements.mentorHelpButton.disabled = true;
+  elements.mentorCloseButton.disabled = true;
+  elements.mentorStatus.textContent = "Сверяю доказательства перед вердиктом…";
+  try {
+    const draft = await api("/api/mentor/close", { method: "POST", body: "{}" });
+    if (draft.action === "need_investigation") {
+      await appendMentorMessage({
+        title: "Закрывать рано",
+        paragraphs: [draft.explanation, "Нажми «Помоги решить», чтобы добыть недостающий факт."],
+      });
+      recommendMentorAction("help");
+      return;
+    }
+
+    const tool = (gameState.available_tools || []).find(
+      (item) => item.name === "finish_investigation",
+    );
+    if (!tool || draft.tool_name !== tool.name || !draft.arguments) {
+      throw new Error("Наставник не смог подготовить доступный финальный вердикт.");
+    }
+    selectedToolName = tool.name;
+    renderTools(gameState);
+    fillNode(renderedFormNode, draft.arguments);
+    await appendMentorMessage({
+      title: "Вердикт подготовлен",
+      paragraphs: [
+        draft.explanation,
+        "Форма справа заполнена. Сверь факты и отправь её вручную — последнее слово за аналитиком.",
+      ],
+    });
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -1402,7 +1524,7 @@ async function restartGame({ confirmActive = false } = {}) {
 
 elements.restartButton.addEventListener("click", () => restartGame({ confirmActive: true }));
 
-elements.docsNavButton.addEventListener("click", () => openDocs("competition"));
+elements.docsNavButton.addEventListener("click", () => openDocs("about"));
 elements.toolsDocsButton.addEventListener("click", () => openDocs("tools"));
 elements.docsCloseButton.addEventListener("click", closeDocs);
 elements.docsTabs.forEach((tab) => {

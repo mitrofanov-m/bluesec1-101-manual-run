@@ -327,6 +327,8 @@ def test_http_api_serves_page_and_browser_safe_task_state() -> None:
 
         assert page.status_code == 200
         assert "BlueSec Manual Lab" in page.text
+        assert "Документация" in page.text
+        assert "Инструменты расследования" in page.text
         assert response.status_code == 200
         assert response.json()["task_id"] == "task-01"
         assert "secret-token" not in response.text

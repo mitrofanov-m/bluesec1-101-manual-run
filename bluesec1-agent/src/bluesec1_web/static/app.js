@@ -3,6 +3,7 @@
 let gameState = null;
 let selectedToolName = null;
 let renderedFormNode = null;
+let docsLastFocused = null;
 
 const elements = {
   connectView: document.querySelector("#connectView"),
@@ -19,6 +20,13 @@ const elements = {
   abortButton: document.querySelector("#abortButton"),
   restartButton: document.querySelector("#restartButton"),
   completionBanner: document.querySelector("#completionBanner"),
+  docsNavButton: document.querySelector("#docsNavButton"),
+  toolsDocsButton: document.querySelector("#toolsDocsButton"),
+  docsOverlay: document.querySelector("#docsOverlay"),
+  docsDialog: document.querySelector("#docsDialog"),
+  docsCloseButton: document.querySelector("#docsCloseButton"),
+  docsTabs: [...document.querySelectorAll("[data-doc-page]")],
+  docsPages: [...document.querySelectorAll("[data-doc-content]")],
   busyOverlay: document.querySelector("#busyOverlay"),
   busyText: document.querySelector("#busyText"),
   toast: document.querySelector("#toast"),
@@ -56,6 +64,31 @@ function showToast(message) {
   elements.toast.textContent = message;
   elements.toast.classList.remove("hidden");
   window.setTimeout(() => elements.toast.classList.add("hidden"), 5500);
+}
+
+function openDocs(page = "tools") {
+  const wasHidden = elements.docsOverlay.classList.contains("hidden");
+  if (wasHidden) docsLastFocused = document.activeElement;
+  elements.docsTabs.forEach((tab) => {
+    const active = tab.dataset.docPage === page;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-current", active ? "page" : "false");
+  });
+  elements.docsPages.forEach((content) => {
+    content.classList.toggle("hidden", content.dataset.docContent !== page);
+  });
+  elements.docsOverlay.classList.remove("hidden");
+  elements.docsOverlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("docs-open");
+  if (wasHidden) elements.docsCloseButton.focus();
+}
+
+function closeDocs() {
+  elements.docsOverlay.classList.add("hidden");
+  elements.docsOverlay.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("docs-open");
+  if (docsLastFocused instanceof HTMLElement) docsLastFocused.focus();
+  docsLastFocused = null;
 }
 
 function parseMaybeJson(value) {
@@ -986,6 +1019,21 @@ async function restartGame({ confirmActive = false } = {}) {
 }
 
 elements.restartButton.addEventListener("click", () => restartGame({ confirmActive: true }));
+
+elements.docsNavButton.addEventListener("click", () => openDocs("tools"));
+elements.toolsDocsButton.addEventListener("click", () => openDocs("tools"));
+elements.docsCloseButton.addEventListener("click", closeDocs);
+elements.docsTabs.forEach((tab) => {
+  tab.addEventListener("click", () => openDocs(tab.dataset.docPage));
+});
+elements.docsOverlay.addEventListener("click", (event) => {
+  if (event.target === elements.docsOverlay) closeDocs();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !elements.docsOverlay.classList.contains("hidden")) {
+    closeDocs();
+  }
+});
 
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-copy-target]");

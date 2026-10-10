@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from bluesec1_client import PublicTask, RemoteRunNotFoundError, TaskResult, ToolCallResult
 from bluesec1_web.app import create_app
 from bluesec1_web.game import GameStateError, InvestigationGame
+from bluesec1_web.mentor import AdviceReply, ExplanationReply, HelpReply, MentorConfig
 
 TOOL_CATALOG = [
     {
@@ -122,6 +123,63 @@ class FakeClientFactory:
         self.sessions.append(session)
         self.clients.append(client)
         return client
+
+
+class FakeMentor:
+    def __init__(self, config: MentorConfig) -> None:
+        self.config = config
+        self.received_tools: list[dict[str, Any]] = []
+        self.received_contexts: list[dict[str, Any]] = []
+
+    @property
+    def public_config(self) -> dict[str, str]:
+        return self.config.public()
+
+    async def advice(self, context: dict[str, Any]) -> AdviceReply:
+        assert "available_tools" in context
+        self.received_contexts.append(context)
+        return AdviceReply(
+            title="Не паникуем",
+            summary="Алерт пока только гипотеза.",
+            details=["Проверьте исходный процесс."],
+        )
+
+    async def next_step(
+        self,
+        context: dict[str, Any],
+        tools: list[dict[str, Any]],
+    ) -> HelpReply:
+        self.received_contexts.append(context)
+        self.received_tools = tools
+        return HelpReply(
+            explanation="Сначала читаем исходную сущность.",
+            tool_name="get_entity",
+            arguments_json=json.dumps(
+                {"entity_id": "entity-01", "reasoning": "Inspect the trigger."}
+            ),
+        )
+
+    async def explain(
+        self,
+        context: dict[str, Any],
+        event: dict[str, Any],
+    ) -> ExplanationReply:
+        assert event["tool_name"] == "get_entity"
+        return ExplanationReply(
+            meaning="Инструмент нашёл сущность.",
+            important=["entity_id связывает следующие шаги."],
+            next_hint="Проверьте новые связи.",
+        )
+
+
+class FakeMentorFactory:
+    def __init__(self) -> None:
+        self.instances: list[FakeMentor] = []
+
+    def __call__(self, config: MentorConfig) -> FakeMentor:
+        mentor = FakeMentor(config)
+        self.instances.append(mentor)
+        return mentor
 
 
 def make_game() -> tuple[InvestigationGame, FakeClient, FakeSession]:
@@ -302,6 +360,84 @@ def test_missing_remote_run_during_abort_does_not_return_500() -> None:
     assert response.status_code == 200
     assert response.json()["phase"] == "run_stopped"
     assert response.json()["can_restart"] is True
+
+
+def test_button_driven_mentor_endpoints_use_secret_free_state() -> None:
+    session = FakeSession()
+    client = FakeClient(session)
+    mentor_factory = FakeMentorFactory()
+    game = InvestigationGame(
+        client_factory=lambda **_: client,  # type: ignore[arg-type]
+        mentor_factory=mentor_factory,
+    )
+
+    with TestClient(create_app(game)) as browser:
+        started = browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "runtime-secret",
+                "arena": None,
+                "agent_name": "manual-test",
+                "mentor": {
+                    "provider": "openai",
+                    "endpoint": "https://api.example.test/v1",
+                    "api_key": "llm-secret",
+                    "model": "small-test-model",
+                    "reasoning_effort": "medium",
+                },
+            },
+        )
+        advice = browser.post("/api/mentor/advice", json={})
+        next_step = browser.post("/api/mentor/help", json={})
+        tool_result = browser.post(
+            "/api/tool",
+            json={
+                "tool_name": next_step.json()["tool_name"],
+                "arguments": next_step.json()["arguments"],
+            },
+        )
+        explanation = browser.post("/api/mentor/explain", json={"history_index": 1})
+
+    assert started.status_code == 200
+    assert started.json()["mentor"] == {
+        "provider": "openai",
+        "model": "small-test-model",
+        "reasoning_effort": "medium",
+    }
+    assert "llm-secret" not in json.dumps(started.json())
+    assert "runtime-secret" not in json.dumps(started.json())
+    assert advice.json()["title"] == "Не паникуем"
+    assert next_step.json()["tool_name"] == "get_entity"
+    assert tool_result.status_code == 200
+    assert explanation.json()["meaning"] == "Инструмент нашёл сущность."
+    assert [tool["name"] for tool in mentor_factory.instances[0].received_tools] == [
+        "get_entity"
+    ]
+    assert mentor_factory.instances[0].received_contexts[1]["previous_mentor_messages"] == [
+        {
+            "kind": "advice",
+            "title": "Не паникуем",
+            "summary": "Алерт пока только гипотеза.",
+            "details": ["Проверьте исходный процесс."],
+        }
+    ]
+
+
+def test_openai_mentor_requires_endpoint_and_key() -> None:
+    game, _, _ = make_game()
+
+    with TestClient(create_app(game)) as browser:
+        response = browser.post(
+            "/api/session/start",
+            json={
+                "endpoint": "example.test:443",
+                "token": "secret-token",
+                "mentor": {"provider": "openai", "model": "small-test-model"},
+            },
+        )
+
+    assert response.status_code == 422
 
 
 def test_restart_http_endpoint_returns_new_run_and_task() -> None:

@@ -4,11 +4,28 @@ let gameState = null;
 let selectedToolName = null;
 let renderedFormNode = null;
 let docsLastFocused = null;
+let mentorMessages = [];
+let mentorMessageCounter = 0;
+let mentorTypingGeneration = 0;
+let mentorTypingQueue = Promise.resolve();
+let greetedTaskId = null;
+const toolExplanations = new Map();
+
+const initialMentorGreeting = Object.freeze({
+  title: "Первая смена? Держись.",
+  paragraphs: [
+    "Привет! Я SIEMён Петрович. Добро пожаловать в SOC: кофе слева, паника запрещена, а алерты, конечно, уже горят.",
+    "Спокойно читай вводные и ищи факты. Застрянешь — жми «Дай совет», совсем застрянешь — «Помоги решить». Я поворчу, но вытащу.",
+  ],
+});
 
 const elements = {
   connectView: document.querySelector("#connectView"),
   labView: document.querySelector("#labView"),
   connectForm: document.querySelector("#connectForm"),
+  mentorProvider: document.querySelector("#mentorProvider"),
+  codexFields: document.querySelector("#codexFields"),
+  openaiFields: document.querySelector("#openaiFields"),
   phaseBadge: document.querySelector("#phaseBadge"),
   toolCounter: document.querySelector("#toolCounter"),
   taskShortId: document.querySelector("#taskShortId"),
@@ -20,6 +37,10 @@ const elements = {
   restartButton: document.querySelector("#restartButton"),
   endStudyButton: document.querySelector("#endStudyButton"),
   completionBanner: document.querySelector("#completionBanner"),
+  mentorStatus: document.querySelector("#mentorStatus"),
+  mentorReply: document.querySelector("#mentorReply"),
+  mentorAdviceButton: document.querySelector("#mentorAdviceButton"),
+  mentorHelpButton: document.querySelector("#mentorHelpButton"),
   docsNavButton: document.querySelector("#docsNavButton"),
   toolsDocsButton: document.querySelector("#toolsDocsButton"),
   docsOverlay: document.querySelector("#docsOverlay"),
@@ -215,9 +236,21 @@ function updateState(state) {
   const showLab = state.ever_started || state.task_id || !state.can_start;
   elements.connectView.classList.toggle("hidden", showLab);
   elements.labView.classList.toggle("hidden", !showLab);
-  if (!showLab) return;
+  if (!showLab) {
+    resetMentorChat();
+    greetedTaskId = null;
+    toolExplanations.clear();
+    return;
+  }
+
+  if (state.phase === "active" && state.task_id && greetedTaskId !== state.task_id) {
+    resetMentorChat();
+    greetedTaskId = state.task_id;
+    appendMentorMessage(initialMentorGreeting);
+  }
 
   renderCase(state);
+  renderMentor(state);
   renderTimeline(state);
   renderTools(state);
   renderCompletion(state);
@@ -229,6 +262,157 @@ function renderCase(state) {
   renderJsonTree(elements.currentJson, state.current_observation);
   elements.restartButton.disabled = state.phase === "connecting";
   elements.endStudyButton.disabled = state.phase === "connecting";
+}
+
+function renderMentor(state) {
+  const isActive = state.phase === "active";
+  const config = state.mentor;
+  elements.mentorAdviceButton.disabled = !isActive;
+  elements.mentorHelpButton.disabled = !isActive;
+  elements.mentorStatus.textContent = config
+    ? `${config.provider === "codex" ? "Codex" : "OpenAI API"} · ${config.model} · reasoning ${config.reasoning_effort}`
+    : "Наставник не настроен.";
+  renderMentorMessages();
+}
+
+function mentorParagraphs(reply) {
+  if (Array.isArray(reply.paragraphs)) {
+    return reply.paragraphs.map(String).filter(Boolean).slice(0, 2);
+  }
+  const paragraphs = [];
+  if (reply.summary) paragraphs.push(String(reply.summary));
+  if (reply.details?.length) paragraphs.push(reply.details.map(String).join(" "));
+  return paragraphs.filter(Boolean).slice(0, 2);
+}
+
+function resetMentorChat() {
+  mentorTypingGeneration += 1;
+  mentorTypingQueue = Promise.resolve();
+  mentorMessages = [];
+  elements.mentorReply.replaceChildren();
+  elements.mentorReply.classList.add("hidden");
+}
+
+function appendMentorMessage(reply, { animate = true } = {}) {
+  const message = {
+    id: String(++mentorMessageCounter),
+    title: String(reply.title || "SIEMён Петрович"),
+    paragraphs: mentorParagraphs(reply),
+    state: animate ? "queued" : "complete",
+  };
+  mentorMessages.push(message);
+  renderMentorMessages();
+
+  if (!animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    message.state = "complete";
+    renderMentorMessage(message);
+    return Promise.resolve();
+  }
+
+  const generation = mentorTypingGeneration;
+  const animation = mentorTypingQueue.then(() => typeMentorMessage(message, generation));
+  mentorTypingQueue = animation.catch(() => undefined);
+  return animation;
+}
+
+function renderMentorMessages() {
+  elements.mentorReply.classList.toggle("hidden", mentorMessages.length === 0);
+  mentorMessages.forEach((message) => {
+    if (!mentorMessageNode(message.id)) {
+      elements.mentorReply.append(createMentorMessageNode(message));
+    }
+  });
+  scrollMentorToBottom();
+}
+
+function createMentorMessageNode(message) {
+  const article = document.createElement("article");
+  article.className = "mentor-message";
+  article.dataset.messageId = message.id;
+  article.setAttribute(
+    "aria-label",
+    [message.title, ...message.paragraphs].filter(Boolean).join(". "),
+  );
+
+  const visual = document.createElement("div");
+  visual.setAttribute("aria-hidden", "true");
+  const heading = document.createElement("h3");
+  heading.dataset.typingPart = "title";
+  const body = document.createElement("div");
+  body.className = "mentor-message-body";
+  message.paragraphs.forEach((_, index) => {
+    const paragraph = document.createElement("p");
+    paragraph.dataset.typingPart = String(index);
+    body.append(paragraph);
+  });
+  visual.append(heading, body);
+  article.append(visual);
+  if (message.state === "complete") fillMentorMessageNode(article, message);
+  return article;
+}
+
+function mentorMessageNode(messageId) {
+  return elements.mentorReply.querySelector(`[data-message-id="${messageId}"]`);
+}
+
+function renderMentorMessage(message) {
+  const article = mentorMessageNode(message.id);
+  if (!article) return;
+  fillMentorMessageNode(article, message);
+  article.classList.remove("is-typing");
+  scrollMentorToBottom();
+}
+
+function fillMentorMessageNode(article, message) {
+  article.querySelector('[data-typing-part="title"]').textContent = message.title;
+  message.paragraphs.forEach((paragraph, index) => {
+    article.querySelector(`[data-typing-part="${index}"]`).textContent = paragraph;
+  });
+}
+
+async function typeMentorMessage(message, generation) {
+  if (generation !== mentorTypingGeneration) return;
+  const article = mentorMessageNode(message.id);
+  if (!article) return;
+  message.state = "typing";
+  article.classList.add("is-typing");
+
+  const parts = [
+    [article.querySelector('[data-typing-part="title"]'), message.title],
+    ...message.paragraphs.map((paragraph, index) => [
+      article.querySelector(`[data-typing-part="${index}"]`),
+      paragraph,
+    ]),
+  ];
+  for (const [node, text] of parts) {
+    if (generation !== mentorTypingGeneration) return;
+    await typeMentorText(node, text, generation);
+  }
+
+  if (generation !== mentorTypingGeneration) return;
+  message.state = "complete";
+  article.classList.remove("is-typing");
+  scrollMentorToBottom();
+}
+
+async function typeMentorText(node, text, generation) {
+  node.textContent = "";
+  node.classList.add("typing-cursor");
+  for (const character of Array.from(text)) {
+    if (generation !== mentorTypingGeneration) {
+      node.classList.remove("typing-cursor");
+      return;
+    }
+    node.textContent += character;
+    scrollMentorToBottom();
+    const delay = /[.!?…]/.test(character) ? 42 : /[,;:—]/.test(character) ? 24 : 12;
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
+  }
+  node.classList.remove("typing-cursor");
+}
+
+function scrollMentorToBottom() {
+  elements.mentorReply.scrollTop = elements.mentorReply.scrollHeight;
 }
 
 function renderEntryPoint(item, kind) {
@@ -253,7 +437,9 @@ function renderEntryPoint(item, kind) {
 }
 
 function renderTimeline(state) {
-  const events = (state.history || []).filter((event) => event.kind !== "task_started");
+  const events = (state.history || [])
+    .map((event, historyIndex) => ({ event, historyIndex }))
+    .filter(({ event }) => event.kind !== "task_started");
   elements.timeline.replaceChildren(renderInitialAlertEvent(state));
   if (!events.length) {
     const empty = document.createElement("div");
@@ -263,7 +449,7 @@ function renderTimeline(state) {
     return;
   }
 
-  events.forEach((event, index) => {
+  events.forEach(({ event, historyIndex }, index) => {
     const article = document.createElement("article");
     article.className = `timeline-event${event.error ? " event-error" : ""}`;
     const header = document.createElement("div");
@@ -306,7 +492,9 @@ function renderTimeline(state) {
       typeof observation === "object" &&
       Object.prototype.hasOwnProperty.call(observation, "last_tool_result")
     ) {
-      body.append(renderCodeSection("ПОЛУЧЕНО", observation.last_tool_result));
+      body.append(
+        renderCodeSection("ПОЛУЧЕНО", observation.last_tool_result, { historyIndex }),
+      );
     }
     if (event.response) body.append(renderCodeSection("ПОЛНЫЙ ОТВЕТ СРЕДЫ", event.response));
     if (event.task_result) body.append(renderCodeSection("РЕЗУЛЬТАТ", event.task_result));
@@ -404,11 +592,26 @@ function renderInitialEntryPoints(entities, relations) {
   return section;
 }
 
-function renderCodeSection(title, value) {
+function renderCodeSection(title, value, { historyIndex = null } = {}) {
   const container = document.createElement("section");
+  const headingRow = document.createElement("div");
+  headingRow.className = "code-section-heading";
   const heading = document.createElement("h4");
   heading.textContent = title;
-  container.append(heading);
+  headingRow.append(heading);
+  if (historyIndex !== null) {
+    const explainButton = document.createElement("button");
+    explainButton.type = "button";
+    explainButton.className = "explain-result-button";
+    explainButton.textContent = "?";
+    explainButton.title = "Объяснить результат инструмента";
+    explainButton.setAttribute("aria-label", "Объяснить результат инструмента");
+    explainButton.addEventListener("click", () =>
+      explainToolResult(historyIndex, container, explainButton),
+    );
+    headingRow.append(explainButton);
+  }
+  container.append(headingRow);
   const decoded = decodeJsonContainer(value);
   if (decoded.encoded || (value !== null && typeof value === "object")) {
     const tree = document.createElement("div");
@@ -420,7 +623,52 @@ function renderCodeSection(title, value) {
     pre.textContent = typeof value === "string" ? value : pretty(value);
     container.append(pre);
   }
+  if (historyIndex !== null && toolExplanations.has(historyIndex)) {
+    container.append(renderToolExplanation(toolExplanations.get(historyIndex)));
+  }
   return container;
+}
+
+function renderToolExplanation(reply) {
+  const box = document.createElement("div");
+  box.className = "tool-explanation";
+  const title = document.createElement("strong");
+  title.textContent = "SIEMЁН ОБЪЯСНЯЕТ";
+  const meaning = document.createElement("div");
+  meaning.textContent = reply.meaning;
+  box.append(title, meaning);
+  if (reply.important?.length) {
+    const list = document.createElement("ul");
+    reply.important.forEach((detail) => {
+      const item = document.createElement("li");
+      item.textContent = detail;
+      list.append(item);
+    });
+    box.append(list);
+  }
+  const next = document.createElement("div");
+  next.textContent = `Дальше: ${reply.next_hint}`;
+  box.append(next);
+  return box;
+}
+
+async function explainToolResult(historyIndex, container, button) {
+  if (toolExplanations.has(historyIndex)) return;
+  button.disabled = true;
+  button.textContent = "…";
+  try {
+    const reply = await api("/api/mentor/explain", {
+      method: "POST",
+      body: JSON.stringify({ history_index: historyIndex }),
+    });
+    toolExplanations.set(historyIndex, reply);
+    container.append(renderToolExplanation(reply));
+    button.textContent = "✓";
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = "?";
+    showToast(error.message);
+  }
 }
 
 function renderCompletion(state) {
@@ -528,28 +776,36 @@ function renderToolForm(tool) {
     event.preventDefault();
     try {
       const argumentsPayload = collectNode(renderedFormNode, true);
-      if (
-        tool.name === "finish_investigation" &&
-        !window.confirm(
-          "Это завершит первую задачу и закроет run. После отправки расследование продолжить нельзя. Отправить вердикт?",
-        )
-      ) {
-        return;
-      }
-      setBusy(true, `Выполняется ${tool.name}…`);
-      const state = await api("/api/tool", {
-        method: "POST",
-        body: JSON.stringify({ tool_name: tool.name, arguments: argumentsPayload }),
-      });
-      selectedToolName = null;
-      updateState(state);
+      await executeTool(tool, argumentsPayload, { confirmTerminal: true });
     } catch (error) {
       showToast(error.message);
-    } finally {
-      setBusy(false);
     }
   });
   elements.toolFormArea.append(title, form);
+}
+
+async function executeTool(tool, argumentsPayload, { confirmTerminal = false } = {}) {
+  if (
+    confirmTerminal &&
+    tool.name === "finish_investigation" &&
+    !window.confirm(
+      "Это завершит первую задачу и закроет run. После отправки расследование продолжить нельзя. Отправить вердикт?",
+    )
+  ) {
+    return false;
+  }
+  setBusy(true, `Выполняется ${tool.name}…`);
+  try {
+    const state = await api("/api/tool", {
+      method: "POST",
+      body: JSON.stringify({ tool_name: tool.name, arguments: argumentsPayload }),
+    });
+    selectedToolName = null;
+    updateState(state);
+    return true;
+  } finally {
+    setBusy(false);
+  }
 }
 
 function resolveSchema(schema, root) {
@@ -735,7 +991,9 @@ function buildArrayNode(schema, root, options) {
     row.append(remove, child);
     wrapper._items.push(item);
     list.append(row);
+    return item;
   };
+  wrapper._addItem = addItem;
   add.addEventListener("click", addItem);
   box.append(list, add);
   wrapper.append(box);
@@ -879,6 +1137,38 @@ function collectNode(node, forceRequired = false) {
   return raw;
 }
 
+function fillNode(node, value) {
+  if (value === undefined) return;
+  const kind = node.dataset.kind;
+  if (node._enabled) {
+    node._enabled.checked = true;
+    node._enabled.dispatchEvent(new Event("change"));
+  }
+  if (kind === "variant") {
+    fillNode(node._activeNode, value);
+    return;
+  }
+  if (kind === "object") {
+    (node._fields || []).forEach((field) => fillNode(field.node, value?.[field.name]));
+    return;
+  }
+  if (kind === "array") {
+    while ((node._items || []).length < (value || []).length) node._addItem();
+    (value || []).forEach((itemValue, index) => fillNode(node._items[index].node, itemValue));
+    return;
+  }
+  if (kind === "const") return;
+  if (kind === "enum") {
+    node._input.value = JSON.stringify(value);
+    return;
+  }
+  if (kind === "boolean") {
+    node._input.checked = Boolean(value);
+    return;
+  }
+  if (node._input) node._input.value = String(value);
+}
+
 function knownIds(requestedField = "entity_id") {
   const values = {
     entity_id: new Map(),
@@ -969,10 +1259,69 @@ function describeKnownObject(value, fallbackType) {
   return displayValue ? `${type}: ${displayValue}` : null;
 }
 
+function syncMentorProviderFields() {
+  const useOpenAI = elements.mentorProvider.value === "openai";
+  elements.codexFields.classList.toggle("hidden", useOpenAI);
+  elements.openaiFields.classList.toggle("hidden", !useOpenAI);
+  elements.connectForm.elements.openaiEndpoint.required = useOpenAI;
+  elements.connectForm.elements.openaiApiKey.required = useOpenAI;
+  elements.connectForm.elements.openaiModel.required = useOpenAI;
+  elements.connectForm.elements.codexModel.required = !useOpenAI;
+}
+
+elements.mentorProvider.addEventListener("change", syncMentorProviderFields);
+syncMentorProviderFields();
+
+elements.mentorAdviceButton.addEventListener("click", async () => {
+  elements.mentorAdviceButton.disabled = true;
+  elements.mentorHelpButton.disabled = true;
+  elements.mentorStatus.textContent = "Собираю улики в одну картину…";
+  try {
+    const reply = await api("/api/mentor/advice", { method: "POST", body: "{}" });
+    await appendMentorMessage(reply);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    renderMentor(gameState);
+  }
+});
+
+elements.mentorHelpButton.addEventListener("click", async () => {
+  elements.mentorAdviceButton.disabled = true;
+  elements.mentorHelpButton.disabled = true;
+  elements.mentorStatus.textContent = "Выбираю следующий шаг. Да, опять работать…";
+  try {
+    const step = await api("/api/mentor/help", { method: "POST", body: "{}" });
+    const tool = (gameState.available_tools || []).find((item) => item.name === step.tool_name);
+    if (!tool || tool.name === "finish_investigation") {
+      throw new Error("Наставник выбрал недоступный безопасный шаг.");
+    }
+
+    const message = {
+      title: `Следующий шаг: ${step.tool_name}`,
+      paragraphs: [
+        step.explanation,
+        "Поля справа уже заполнены. Инструмент запускается автоматически.",
+      ],
+    };
+    selectedToolName = tool.name;
+    renderTools(gameState);
+    fillNode(renderedFormNode, step.arguments);
+    await appendMentorMessage(message);
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    await executeTool(tool, step.arguments);
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    renderMentor(gameState);
+  }
+});
+
 elements.connectForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const data = new FormData(elements.connectForm);
   const token = String(data.get("token") || "");
+  const mentorProvider = String(data.get("mentorProvider") || "codex");
   setBusy(true, "Создаём run и получаем первую задачу…");
   try {
     const state = await api("/api/session/start", {
@@ -982,9 +1331,26 @@ elements.connectForm.addEventListener("submit", async (event) => {
         token,
         arena: String(data.get("arena") || "").trim() || null,
         agent_name: String(data.get("agentName") || "bluesec-manual-lab"),
+        mentor: {
+          provider: mentorProvider,
+          endpoint:
+            mentorProvider === "openai"
+              ? String(data.get("openaiEndpoint") || "").trim()
+              : null,
+          api_key:
+            mentorProvider === "openai"
+              ? String(data.get("openaiApiKey") || "")
+              : null,
+          model: String(
+            data.get(mentorProvider === "openai" ? "openaiModel" : "codexModel") ||
+              "gpt-5.6-luna",
+          ).trim(),
+          reasoning_effort: "medium",
+        },
       }),
     });
     elements.connectForm.elements.token.value = "";
+    elements.connectForm.elements.openaiApiKey.value = "";
     updateState(state);
   } catch (error) {
     showToast(error.message);

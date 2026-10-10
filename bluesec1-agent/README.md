@@ -53,9 +53,16 @@ To investigate exactly one task yourself in a mouse-driven local interface, run:
 uv run bluesec1-web
 ```
 
-Then open http://127.0.0.1:8765 and enter the scenario-runtime token. The token
-is kept only in the local server process and is never returned to the browser.
-No LLM configuration is needed.
+Then open http://127.0.0.1:8765, enter the scenario-runtime token, and choose the
+mentor connection:
+
+- **Codex CLI** uses the local Codex login. The default is `gpt-5.6-luna` with
+  `medium` reasoning; use a current Codex CLI release.
+- **OpenAI API** accepts a Responses API endpoint, API key, and model on the start
+  screen.
+
+Runtime and LLM credentials are kept only in the local server process and are
+never returned to the browser.
 
 The interface leases the first task once, shows the complete initial observation
 and the runtime-advertised tool catalog, and builds clickable argument forms from
@@ -63,6 +70,12 @@ each tool's JSON Schema. Every request and complete runtime response remains in
 the on-screen investigation trace. A terminal `finish_investigation` call closes
 the run; the interface never requests the next task. You can also abort without
 submitting a verdict.
+
+The left-side mentor, **SIEMён Петрович**, is controlled only by buttons. **Дай
+совет** summarizes the current evidence, **Помоги решить** explains and performs
+one non-terminal tool call, and the `?` button beside a tool result explains the
+security-relevant fields. The mentor cannot automatically submit the final
+verdict.
 
 ## What a task looks like
 

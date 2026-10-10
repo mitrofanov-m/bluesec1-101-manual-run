@@ -79,11 +79,61 @@
               <input name="agentName" value="bluesec-manual-lab" required />
             </label>
           </div>
+          <fieldset class="mentor-connect-fields">
+            <legend>Наставник // SIEMён Петрович</legend>
+            <label>
+              <span>Способ подключения LLM</span>
+              <select id="mentorProvider" name="mentorProvider">
+                <option value="codex" selected>Codex CLI — локальный вход</option>
+                <option value="openai">OpenAI API — endpoint и ключ</option>
+              </select>
+            </label>
+            <div id="codexFields" class="provider-fields">
+              <label>
+                <span>Модель Codex</span>
+                <input name="codexModel" value="gpt-5.6-luna" autocomplete="off" />
+              </label>
+              <p class="provider-note">
+                Используется локальная авторизация Codex. Reasoning: <code>medium</code>.
+              </p>
+            </div>
+            <div id="openaiFields" class="provider-fields hidden">
+              <label>
+                <span>API endpoint</span>
+                <input
+                  name="openaiEndpoint"
+                  value="https://api.openai.com/v1"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                <span>API key</span>
+                <input
+                  name="openaiApiKey"
+                  type="password"
+                  placeholder="sk-…"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label>
+                <span>Модель</span>
+                <input name="openaiModel" value="gpt-5.6-luna" autocomplete="off" />
+              </label>
+              <p class="provider-note">
+                Совместимая схема Responses API. Reasoning: <code>medium</code>.
+              </p>
+            </div>
+            <p class="mentor-data-note">
+              По нажатию кнопок контекст расследования отправляется выбранной LLM.
+            </p>
+          </fieldset>
           <button class="primary-button" type="submit">
             <span>Получить первую задачу</span><span aria-hidden="true">→</span>
           </button>
           <p class="microcopy">
-            Интерфейс не запускает LLM и не запрашивает вторую задачу даже после завершения.
+            Ключи хранятся только в памяти локального сервера. Вторая задача не запрашивается.
           </p>
         </form>
       </section>
@@ -92,6 +142,42 @@
         <aside class="case-sidebar panel">
           <div class="panel-label">CASE FILE</div>
           <div class="case-number">TASK <span id="taskShortId">—</span></div>
+          <section class="mentor-card" aria-labelledby="mentorName">
+            <div class="mentor-profile">
+              <div class="pixel-mentor" aria-hidden="true">
+                <div class="pixel-head">
+                  <i class="pixel-hair"></i>
+                  <i class="pixel-eye pixel-eye-left"></i>
+                  <i class="pixel-eye pixel-eye-right"></i>
+                  <i class="pixel-mouth"></i>
+                </div>
+                <div class="pixel-body">
+                  <i class="pixel-badge">S</i>
+                  <i class="pixel-arm"></i>
+                  <i class="pixel-mug"></i>
+                </div>
+              </div>
+              <div>
+                <p id="mentorName">SIEMён Петрович</p>
+                <small>наставник SOC · слегка жив</small>
+              </div>
+            </div>
+            <div id="mentorStatus" class="mentor-status">
+              Нажми кнопку. Я уже видел алерты и похуже. Наверное.
+            </div>
+            <div
+              id="mentorReply"
+              class="mentor-reply hidden"
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-label="Сообщения SIEMёна Петровича"
+            ></div>
+            <div class="mentor-actions">
+              <button id="mentorAdviceButton" type="button">Дай совет</button>
+              <button id="mentorHelpButton" type="button">Помоги решить</button>
+            </div>
+          </section>
           <button id="restartButton" class="restart-game-button" type="button">
             Начать заново
           </button>

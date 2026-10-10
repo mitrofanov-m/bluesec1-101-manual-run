@@ -16,6 +16,16 @@ from bluesec1_client import (
     RemoteRunNotFoundError,
 )
 
+from .mentor import (
+    AdviceReply,
+    ExplanationReply,
+    HelpReply,
+    InvestigationMentor,
+    MentorConfig,
+    MentorError,
+    MentorService,
+)
+
 
 class GameStateError(RuntimeError):
     """A safe, user-facing lifecycle or input error."""
@@ -27,6 +37,7 @@ class GameStateError(RuntimeError):
 
 
 ClientFactory = Callable[..., RemoteBenchmarkClient]
+MentorFactory = Callable[[MentorConfig], InvestigationMentor]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,13 +48,19 @@ class ConnectionSettings:
     token: str
     arena: str | None
     agent_name: str
+    mentor: MentorConfig
 
 
 class InvestigationGame:
     """Own exactly one remote run and lease at most one task from it."""
 
-    def __init__(self, client_factory: ClientFactory = RemoteBenchmarkClient) -> None:
+    def __init__(
+        self,
+        client_factory: ClientFactory = RemoteBenchmarkClient,
+        mentor_factory: MentorFactory = MentorService,
+    ) -> None:
         self._client_factory = client_factory
+        self._mentor_factory = mentor_factory
         self._lock = asyncio.Lock()
         self._client: RemoteBenchmarkClient | None = None
         self._session: RemoteBenchmarkSession | None = None
@@ -59,6 +76,8 @@ class InvestigationGame:
         self._last_error: str | None = None
         self._close_warning: str | None = None
         self._connection_settings: ConnectionSettings | None = None
+        self._mentor: InvestigationMentor | None = None
+        self._mentor_messages: list[dict[str, Any]] = []
 
     async def start(
         self,
@@ -67,6 +86,7 @@ class InvestigationGame:
         token: str,
         arena: str | None,
         agent_name: str,
+        mentor: MentorConfig | None = None,
     ) -> dict[str, Any]:
         """Create one run and lease its first task, never a second task."""
         async with self._lock:
@@ -92,8 +112,61 @@ class InvestigationGame:
                     token=token,
                     arena=arena,
                     agent_name=agent_name,
+                    mentor=mentor or MentorConfig(),
                 )
             )
+
+    async def mentor_advice(self) -> dict[str, Any]:
+        """Ask the configured mentor for a compact evidence-focused status."""
+        async with self._lock:
+            self._require_active_session()
+            mentor = self._require_mentor()
+            reply: AdviceReply = await mentor.advice(self._mentor_context())
+            payload = reply.model_dump(mode="json")
+            self._remember_mentor_message("advice", payload)
+            return payload
+
+    async def mentor_next_step(self) -> dict[str, Any]:
+        """Ask the mentor for one safe, non-terminal tool call."""
+        async with self._lock:
+            self._require_active_session()
+            mentor = self._require_mentor()
+            safe_tools = [
+                tool for tool in self._tool_specs if tool.get("name") != "finish_investigation"
+            ]
+            reply: HelpReply = await mentor.next_step(self._mentor_context(), safe_tools)
+            advertised_names = {tool["name"] for tool in safe_tools}
+            if reply.tool_name not in advertised_names:
+                raise MentorError("Наставник выбрал недоступный или терминальный инструмент.")
+            self._remember_mentor_message(
+                "help",
+                {"explanation": reply.explanation, "tool_name": reply.tool_name},
+            )
+            return {
+                "explanation": reply.explanation,
+                "tool_name": reply.tool_name,
+                "arguments": reply.arguments(),
+            }
+
+    async def mentor_explain(self, history_index: int) -> dict[str, Any]:
+        """Explain a completed tool call selected by its stable history index."""
+        async with self._lock:
+            mentor = self._require_mentor()
+            if history_index < 0 or history_index >= len(self._history):
+                raise GameStateError(
+                    "Выбранный результат инструмента не найден.",
+                    code="tool_result_not_found",
+                    status_code=404,
+                )
+            event = self._history[history_index]
+            if event.get("kind") != "tool_call" or "response" not in event:
+                raise GameStateError(
+                    "Для выбранного события ещё нет результата инструмента.",
+                    code="tool_result_not_available",
+                    status_code=400,
+                )
+            reply: ExplanationReply = await mentor.explain(self._mentor_context(), event)
+            return reply.model_dump(mode="json")
 
     async def call_tool(
         self,
@@ -267,6 +340,7 @@ class InvestigationGame:
             "investigation_tool_calls": sum(
                 item["kind"] == "tool_call" for item in self._history
             ),
+            "mentor": self._mentor.public_config if self._mentor is not None else None,
         }
 
     def _require_active_session(self) -> RemoteBenchmarkSession:
@@ -277,10 +351,37 @@ class InvestigationGame:
             )
         return self._session
 
+    def _require_mentor(self) -> InvestigationMentor:
+        if self._mentor is None:
+            raise GameStateError(
+                "Наставник не настроен. Вернитесь на стартовый экран.",
+                code="mentor_not_configured",
+            )
+        return self._mentor
+
+    def _mentor_context(self) -> dict[str, Any]:
+        """Build a secret-free evidence bundle for the LLM."""
+        return {
+            "phase": self._phase,
+            "task_id": self._task_id,
+            "initial_observation": self._initial_observation,
+            "current_observation": self._current_observation,
+            "history": self._history,
+            "available_tools": self._tool_specs,
+            "previous_mentor_messages": self._mentor_messages[-8:],
+        }
+
+    def _remember_mentor_message(self, kind: str, payload: dict[str, Any]) -> None:
+        """Keep short secret-free memory so repeated button presses add new value."""
+        self._mentor_messages.append({"kind": kind, **payload})
+        if len(self._mentor_messages) > 8:
+            self._mentor_messages = self._mentor_messages[-8:]
+
     async def _start_run_locked(self, settings: ConnectionSettings) -> dict[str, Any]:
         """Open one run from retained settings while the game lock is held."""
         self._phase = "connecting"
         self._last_error = None
+        self._mentor = self._mentor_factory(settings.mentor)
         client = self._client_factory(
             endpoint=settings.endpoint,
             token=settings.token,
@@ -304,6 +405,7 @@ class InvestigationGame:
         except Exception:
             self._phase = "ready"
             self._client = None
+            self._mentor = None
             await self._best_effort_close(client)
             raise
 
@@ -367,8 +469,10 @@ class InvestigationGame:
         self._task_result = None
         self._last_error = None
         self._close_warning = None
+        self._mentor_messages = []
         if clear_connection:
             self._connection_settings = None
+            self._mentor = None
 
     @staticmethod
     def _run_stopped_message() -> str:

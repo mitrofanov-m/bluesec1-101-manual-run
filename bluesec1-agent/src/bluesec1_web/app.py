@@ -6,14 +6,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import truststore
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from bluesec1_client import (
     CompetitionClosedError,
@@ -27,9 +27,40 @@ from bluesec1_client import (
 )
 
 from .game import GameStateError, InvestigationGame
+from .mentor import MentorConfig, MentorError
 
 LOGGER = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).with_name("static")
+
+
+class MentorRequest(BaseModel):
+    """LLM connection chosen on the local start screen."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["codex", "openai"] = "codex"
+    endpoint: str | None = Field(default=None, max_length=512)
+    api_key: SecretStr | None = None
+    model: str = Field(default="gpt-5.6-luna", min_length=1, max_length=255)
+    reasoning_effort: Literal["low", "medium", "high"] = "medium"
+
+    @model_validator(mode="after")
+    def validate_provider_settings(self) -> MentorRequest:
+        if self.provider == "openai":
+            if not self.endpoint:
+                raise ValueError("Для OpenAI API укажите endpoint.")
+            if self.api_key is None or not self.api_key.get_secret_value():
+                raise ValueError("Для OpenAI API укажите ключ.")
+        return self
+
+    def to_config(self) -> MentorConfig:
+        return MentorConfig(
+            provider=self.provider,
+            endpoint=self.endpoint,
+            api_key=self.api_key.get_secret_value() if self.api_key is not None else None,
+            model=self.model,
+            reasoning_effort=self.reasoning_effort,
+        )
 
 
 class StartRequest(BaseModel):
@@ -41,6 +72,7 @@ class StartRequest(BaseModel):
     token: SecretStr = Field(min_length=1)
     arena: str | None = Field(default=None, min_length=1, max_length=64)
     agent_name: str = Field(default="bluesec-manual-lab", min_length=1, max_length=255)
+    mentor: MentorRequest = Field(default_factory=MentorRequest)
 
 
 class ToolRequest(BaseModel):
@@ -50,6 +82,14 @@ class ToolRequest(BaseModel):
 
     tool_name: str = Field(min_length=1, max_length=255)
     arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExplainRequest(BaseModel):
+    """Select one completed tool call from the retained trace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    history_index: int = Field(ge=0)
 
 
 def create_app(game: InvestigationGame | None = None) -> FastAPI:
@@ -78,6 +118,13 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
             content={"error": {"code": error.code, "message": str(error)}},
         )
 
+    @app.exception_handler(MentorError)
+    async def mentor_error_handler(_: Request, error: MentorError) -> JSONResponse:
+        return JSONResponse(
+            status_code=502,
+            content={"error": {"code": "mentor_error", "message": str(error)}},
+        )
+
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
@@ -94,6 +141,7 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
                 token=payload.token.get_secret_value(),
                 arena=payload.arena,
                 agent_name=payload.agent_name,
+                mentor=payload.mentor.to_config(),
             )
         except GameStateError:
             raise
@@ -105,6 +153,33 @@ def create_app(game: InvestigationGame | None = None) -> FastAPI:
         try:
             return await controller.call_tool(payload.tool_name, payload.arguments)
         except GameStateError:
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
+    @app.post("/api/mentor/advice")
+    async def mentor_advice() -> dict[str, Any]:
+        try:
+            return await controller.mentor_advice()
+        except (GameStateError, MentorError):
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
+    @app.post("/api/mentor/help")
+    async def mentor_help() -> dict[str, Any]:
+        try:
+            return await controller.mentor_next_step()
+        except (GameStateError, MentorError):
+            raise
+        except Exception as error:
+            raise _public_http_error(error) from error
+
+    @app.post("/api/mentor/explain")
+    async def mentor_explain(payload: ExplainRequest) -> dict[str, Any]:
+        try:
+            return await controller.mentor_explain(payload.history_index)
+        except (GameStateError, MentorError):
             raise
         except Exception as error:
             raise _public_http_error(error) from error

@@ -1243,6 +1243,113 @@ textarea {
   line-height: 1.6;
 }
 
+.docs-flow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin: 0 0 9px;
+  padding: 0;
+  list-style: none;
+}
+
+.docs-flow li,
+.docs-overview-card {
+  border: 1px solid var(--line);
+  background: #07110e;
+}
+
+.docs-flow li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 11px;
+  padding: 15px;
+}
+
+.docs-flow li > span {
+  grid-row: 1 / span 2;
+  color: var(--accent);
+  font: 10px/1.5 var(--mono);
+}
+
+.docs-flow strong,
+.docs-overview-card h4,
+.docs-verdicts strong {
+  color: var(--text);
+  font: 10px/1.5 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.docs-flow p,
+.docs-overview-card p {
+  margin: 0;
+  color: #a7bbb2;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.docs-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.docs-overview-card {
+  padding: 17px;
+}
+
+.docs-overview-card h4 {
+  margin: 0 0 9px;
+  color: var(--cyan);
+}
+
+.docs-overview-card code {
+  color: var(--accent);
+  font: 10px var(--mono);
+}
+
+.docs-overview-wide {
+  grid-column: 1 / -1;
+}
+
+.docs-path-example {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #18372d;
+  background: #050c0a;
+}
+
+.docs-path-example span {
+  color: var(--muted);
+  font: 11px var(--mono);
+}
+
+.docs-verdicts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.docs-verdicts > div {
+  padding: 13px;
+  border: 1px solid #18372d;
+  background: #050c0a;
+}
+
+.docs-verdicts strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+
+.docs-score-card {
+  border-left-color: var(--accent);
+}
+
 .tool-doc-list {
   display: grid;
   gap: 9px;
@@ -1274,6 +1381,27 @@ textarea {
 .tool-doc-card p code {
   color: var(--accent);
   font: 10px var(--mono);
+}
+
+.tool-doc-example {
+  grid-column: 1 / -1;
+  margin-top: 2px;
+  padding: 13px 14px;
+  border-left: 2px solid var(--accent);
+  background: rgba(141, 252, 174, 0.045);
+}
+
+.tool-doc-example strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--accent);
+  font: 9px var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.tool-doc-example p {
+  color: #b6c9c0;
 }
 
 .finish-doc-card {
@@ -1455,6 +1583,16 @@ textarea {
   .tool-doc-card {
     grid-template-columns: 1fr;
     gap: 7px;
+  }
+
+  .docs-flow,
+  .docs-overview-grid,
+  .docs-verdicts {
+    grid-template-columns: 1fr;
+  }
+
+  .docs-overview-wide {
+    grid-column: auto;
   }
 
   .workspace-header {

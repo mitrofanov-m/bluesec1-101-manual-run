@@ -167,13 +167,90 @@
         <div class="docs-layout">
           <nav class="docs-tabs" aria-label="Страницы документации">
             <p>СТРАНИЦЫ</p>
-            <button class="docs-tab active" type="button" data-doc-page="tools">
+            <button class="docs-tab active" type="button" data-doc-page="competition">
               <span>01</span>
+              <strong>О соревновании</strong>
+            </button>
+            <button class="docs-tab" type="button" data-doc-page="tools">
+              <span>02</span>
               <strong>Доступные инструменты</strong>
             </button>
           </nav>
           <div class="docs-content">
-            <article class="docs-page" data-doc-content="tools">
+            <article class="docs-page" data-doc-content="competition">
+              <p class="eyebrow">BLUESEC OVERVIEW</p>
+              <h3>Как устроено соревнование</h3>
+              <p class="docs-lead">
+                BlueSec — симулятор работы автономного SOC-аналитика. Агент получает
+                алерт, исследует связанные события и должен доказательно решить:
+                это настоящая атака или ложное срабатывание.
+              </p>
+
+              <ol class="docs-flow" aria-label="Этапы расследования">
+                <li><span>01</span><strong>Получить алерт</strong><p>Условие, несколько сущностей и иногда связи между ними.</p></li>
+                <li><span>02</span><strong>Исследовать граф</strong><p>Один вызов инструмента за шаг и оценка каждого результата.</p></li>
+                <li><span>03</span><strong>Отправить вердикт</strong><p>Вывод вместе с проверяемыми доказательствами.</p></li>
+              </ol>
+
+              <div class="docs-overview-grid">
+                <section class="docs-overview-card docs-overview-wide">
+                  <h4>Граф расследования</h4>
+                  <p>
+                    Данные представлены как сущности — хосты, процессы, файлы,
+                    пользователи и сетевые адреса — и связи, описывающие действия
+                    между ними: запуск, запись файла, вход на хост или соединение.
+                  </p>
+                  <div class="docs-path-example" aria-label="Обобщённый пример цепочки событий">
+                    <code>учётная запись</code><span>→</span><code>вход на хост</code><span>→</span><code>процесс</code><span>→</span><code>файл</code><span>→</span><code>соединение</code>
+                  </div>
+                </section>
+
+                <section class="docs-overview-card">
+                  <h4>Главная сложность</h4>
+                  <p>
+                    Алерт — начальная гипотеза, а не доказательство атаки. Необычный
+                    процесс на сервере может быть вторжением, штатным обновлением или
+                    работой администратора. Контекст помогает проверить версию, но не
+                    заменяет доказательства.
+                  </p>
+                </section>
+
+                <section class="docs-overview-card">
+                  <h4>С чем столкнётся агент</h4>
+                  <p>
+                    С процессами, файлами, сетью, реестром, службами, PowerShell,
+                    Active Directory, почтой, VPN, SMB, Windows- и Linux-событиями.
+                    Конкретный набор инструментов и данных объявляет сама среда задачи.
+                  </p>
+                </section>
+
+                <section class="docs-overview-card docs-overview-wide">
+                  <h4>Что требуется в финале</h4>
+                  <div class="docs-verdicts">
+                    <div>
+                      <strong>malicious</strong>
+                      <p>Указать подтверждённые артефакты и нужные действия реагирования: изоляцию, блокировку, удаление или смену учётных данных.</p>
+                    </div>
+                    <div>
+                      <strong>benign</strong>
+                      <p>Сослаться на конкретные свойства сущностей и связей, которые подтверждают легитимность активности.</p>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="docs-overview-card docs-overview-wide docs-score-card">
+                  <h4>Как оценивается результат</h4>
+                  <p>
+                    <code>quality_score</code> отражает правильность вывода и качество
+                    доказательств, а <code>efficiency_score</code> — экономность пути.
+                    Лучшее расследование не собирает всё подряд, а находит короткую
+                    доказательную цепочку без повторных и бесполезных вызовов.
+                  </p>
+                </section>
+              </div>
+            </article>
+
+            <article class="docs-page hidden" data-doc-content="tools">
               <p class="eyebrow">AVAILABLE TOOLS</p>
               <h3>Инструменты расследования</h3>
               <p class="docs-lead">
@@ -184,10 +261,30 @@
                 <section class="tool-doc-card">
                   <code>get_entity</code>
                   <p>Показывает подробности одного объекта по <code>entity_id</code>: процесса, компьютера, пользователя или файла.</p>
+                  <div class="tool-doc-example">
+                    <strong>Практический пример</strong>
+                    <p>
+                      Если свойства процесса уже есть в алерте, <code>get_entity</code>
+                      может не добавить деталей, но вернуть новые
+                      <code>relation_ids</code>. Эти связи становятся следующими точками
+                      расследования через <code>get_relation</code>.
+                    </p>
+                  </div>
                 </section>
                 <section class="tool-doc-card">
                   <code>get_relation</code>
                   <p>Показывает связь между двумя объектами по <code>relation_id</code>, включая её направление и свойства.</p>
+                  <div class="tool-doc-example">
+                    <strong>Когда инструмент полезен</strong>
+                    <p>
+                      Вызывать <code>get_relation</code> для связи, уже выданной в исходном
+                      алерте, обычно нет смысла: среда может вернуть те же самые поля без
+                      новой информации. Инструмент становится полезен позже, когда
+                      <code>get_entity</code> или другой шаг обнаружил новый
+                      <code>relation_id</code>. Тогда по нему можно загрузить ещё не
+                      показанную связь и продолжить расследование от связанных объектов.
+                    </p>
+                  </div>
                 </section>
                 <section class="tool-doc-card">
                   <code>search</code>
@@ -196,6 +293,15 @@
                 <section class="tool-doc-card">
                   <code>get_ad_object_info</code>
                   <p>Получает сведения об объекте Active Directory по найденному <code>ad_object_id</code>.</p>
+                  <div class="tool-doc-example">
+                    <strong>Практический пример</strong>
+                    <p>
+                      Для доменного хоста инструмент может уточнить его назначение,
+                      подразделение, серверные роли и статус контроллера домена. Такой
+                      контекст помогает оценить активность, но сам по себе не доказывает
+                      её безопасность.
+                    </p>
+                  </div>
                 </section>
                 <section class="tool-doc-card finish-doc-card">
                   <code>finish_investigation</code>

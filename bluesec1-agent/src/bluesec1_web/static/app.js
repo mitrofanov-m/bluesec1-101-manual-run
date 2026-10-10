@@ -66,7 +66,7 @@ function showToast(message) {
   window.setTimeout(() => elements.toast.classList.add("hidden"), 5500);
 }
 
-function openDocs(page = "tools") {
+function openDocs(page = "competition") {
   const wasHidden = elements.docsOverlay.classList.contains("hidden");
   if (wasHidden) docsLastFocused = document.activeElement;
   elements.docsTabs.forEach((tab) => {
@@ -1020,7 +1020,7 @@ async function restartGame({ confirmActive = false } = {}) {
 
 elements.restartButton.addEventListener("click", () => restartGame({ confirmActive: true }));
 
-elements.docsNavButton.addEventListener("click", () => openDocs("tools"));
+elements.docsNavButton.addEventListener("click", () => openDocs("competition"));
 elements.toolsDocsButton.addEventListener("click", () => openDocs("tools"));
 elements.docsCloseButton.addEventListener("click", closeDocs);
 elements.docsTabs.forEach((tab) => {
